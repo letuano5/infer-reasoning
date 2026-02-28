@@ -1,0 +1,69 @@
+<think>
+Mục tiêu & grain
+Mục tiêu: Liệt kê tên của giáo viên và tên của học sinh mà giáo viên đó đã viết ghi chú đánh giá sớm nhất theo thời gian.
+Grain: 1 dòng = 1 giáo viên và 1 học sinh được nhận xét đầu tiên.
+
+Gắn khái niệm vào schema
+
+"Với từng giáo viên": Bảng Teachers (tên giáo viên nằm ở cột first_name).
+
+"học sinh nào": Bảng Students (tên học sinh nằm ở cột first_name).
+
+"được họ ghi chú nhận xét": Bảng Assessment_Notes. Các khóa ngoại kết nối là teacher_id và student_id.
+
+"sớm nhất theo thời gian": Hàm MIN(date_of_notes) nhóm theo teacher_id trong bảng Assessment_Notes.
+
+Khung truy vấn
+
+Sử dụng CTE Min_Notes để tìm ngày nhận xét đầu tiên (MIN(date_of_notes)) của mỗi giáo viên (GROUP BY teacher_id).
+
+Từ bảng Assessment_Notes (AN), JOIN với CTE Min_Notes để lọc ra đúng bản ghi nhận xét sớm nhất cho mỗi giáo viên.
+
+JOIN tiếp với bảng Teachers (T) và Students (S) để lấy tên.
+
+Module logic
+
+AGG & TEMPORAL: MIN(date_of_notes) kết hợp GROUP BY teacher_id để lấy thời gian sớm nhất của mỗi giáo viên.
+
+JOIN:
+
+Assessment_Notes JOIN Min_Notes ON teacher_id và date_of_notes = min_date.
+
+Assessment_Notes JOIN Teachers ON teacher_id.
+
+Assessment_Notes JOIN Students ON student_id.
+
+Hoàn thiện & kiểm tra
+
+Mọi bảng, cột sử dụng đều có trong schema khai báo.
+
+Dùng first_name cho cả giáo viên và học sinh vì câu hỏi yêu cầu "cho biết học sinh nào" và "Với từng giáo viên".
+
+Alias bảng đầy đủ để tránh nhập nhằng tên cột first_name giữa 2 bảng Teachers và Students.
+
+SQLite hoàn toàn tương thích với CTE (WITH) và phép JOIN thông thường.
+
+</think>
+
+<sql>
+WITH Min_Notes AS (
+SELECT
+teacher_id,
+MIN(date_of_notes) AS min_date
+FROM Assessment_Notes
+GROUP BY teacher_id
+)
+SELECT
+T.first_name,
+S.first_name
+FROM Assessment_Notes AS AN
+JOIN Min_Notes AS MN
+ON AN.teacher_id = MN.teacher_id
+AND AN.date_of_notes = MN.min_date
+JOIN Teachers AS T
+ON AN.teacher_id = T.teacher_id
+JOIN Students AS S
+ON AN.student_id = S.student_id;
+</sql>
+
+Note: ctrl C không đánh số, tự đánh số dòng, xóa '/n' thừa

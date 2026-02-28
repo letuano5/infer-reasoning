@@ -1,0 +1,31 @@
+## [DB_ID] california_schools
+### Schema
+# Table: frpm
+
+(CDSCode:TEXT, Primary Key, Examples: [01100170109835, 01100170112607, 01100170118489]),
+(Academic Year:TEXT, Examples: [2014-2015]),
+(County Code:TEXT, Examples: [01, 02, 03]),
+(District Code:INTEGER, Examples: [10017, 31609, 31617]),
+(School Code:TEXT, Examples: [0109835, 0112607, 0118489])
+
+Sample rows from: `frpm`
+01100170109835, 2014-2015, 01, 10017, 0109835  
+01100170112607, 2014-2015, 01, 10017, 0112607  
+01100170118489, 2014-2015, 01, 10017, 0118489
+
+# Table: schools
+
+(CDSCode:TEXT, Primary Key, Examples: [01100170000000, 01100170109835, 01100170112607]),
+(District:TEXT),
+(School:TEXT, Examples: [FAME Public Charter]),
+(Zip:TEXT, Examples: [94544-1136, 94560-5359, 94612-3355]),
+(Charter:INTEGER, Examples: [1, 0])
+
+Sample rows from: `schools`
+01100170000000, Alameda County Office of Education, None, 94544-1136, None  
+01100170109835, Alameda County Office of Education, FAME Public Charter, 94560-5359, 1  
+01100170112607, Alameda County Office of Education, Envision Academy for Arts & Technology, 94612-3355, 1
+
+[Foreign keys]
+frpm.CDSCode=schools.CDSCode
+
