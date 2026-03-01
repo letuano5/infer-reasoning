@@ -20,6 +20,8 @@ from prompt import prompt_template, format_result
 from schema_extractor import get_schema
 from base_model import BaseReasoningModel
 
+MAX_RETRIES = 3
+
 # ---------------------------------------------------------------------------
 # Logging setup
 # ---------------------------------------------------------------------------
@@ -29,6 +31,21 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("runner")
+
+
+def _get_fail_logger(model_name: str) -> logging.Logger:
+    """Create a file logger that writes failed questions to failed_questions_<model>.log."""
+    fail_logger = logging.getLogger(f"failed_{model_name}")
+    if not fail_logger.handlers:
+        log_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            f"failed_questions_{model_name}.log",
+        )
+        fh = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+        fh.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+        fail_logger.addHandler(fh)
+        fail_logger.setLevel(logging.WARNING)
+    return fail_logger
 
 # ---------------------------------------------------------------------------
 # CSV helpers
@@ -111,8 +128,14 @@ def create_model(name: str) -> BaseReasoningModel:
 def process_question(
     model: BaseReasoningModel,
     row: dict,
+    fail_logger: logging.Logger,
 ) -> dict:
-    """Process one question: extract schema, build prompt, call model, parse result."""
+    """Process one question with retry logic.
+
+    Retries up to MAX_RETRIES times if either SQL or reasoning extraction
+    fails.  If all retries are exhausted, logs the failure and returns
+    whatever partial result was obtained.
+    """
     qid = row["question_id"]
     schema_id = row["schema_id"]
     question = row["nl_question"]
@@ -126,16 +149,56 @@ def process_question(
     # 2. Build prompt
     prompt = prompt_template.format(schema=schema, question=question)
 
-    # 3. Call model
-    think_raw, sql = model.generate(prompt)
+    # 3. Call model with retry
+    think_formatted = ""
+    sql = ""
 
-    # 4. Format the think part
-    think_formatted = format_result(think_raw)
+    for attempt in range(1, MAX_RETRIES + 1):
+        think_raw, sql_candidate = model.generate(prompt)
+        think_candidate = format_result(think_raw)
+
+        has_sql = bool(sql_candidate and sql_candidate.strip())
+        has_think = bool(think_candidate and think_candidate.strip())
+
+        # Keep best result so far
+        if has_sql:
+            sql = sql_candidate
+        if has_think:
+            think_formatted = think_candidate
+
+        if sql.strip() and think_formatted.strip():
+            # Both extracted successfully
+            if attempt > 1:
+                logger.info(
+                    f"[{model.name}] q{qid}: succeeded on attempt {attempt}"
+                )
+            break
+
+        missing = []
+        if not sql.strip():
+            missing.append("SQL")
+        if not think_formatted.strip():
+            missing.append("reasoning")
+        logger.warning(
+            f"[{model.name}] q{qid}: missing {', '.join(missing)} "
+            f"(attempt {attempt}/{MAX_RETRIES})"
+        )
+    else:
+        # All retries exhausted
+        missing = []
+        if not sql.strip():
+            missing.append("SQL")
+        if not think_formatted.strip():
+            missing.append("reasoning")
+        fail_logger.warning(
+            f"q{qid} | schema={schema_id} | missing: {', '.join(missing)} | "
+            f"question: {question[:120]}"
+        )
 
     elapsed = time.time() - start
     logger.info(f"[{model.name}] Done q{qid} in {elapsed:.1f}s")
 
-    # 5. Build result row
+    # 4. Build result row
     result = dict(row)
     result["sql_answer"] = sql
     result["think"] = think_formatted
@@ -163,9 +226,13 @@ def run_model(
 
     for i, row in enumerate(questions):
         qid = row["question_id"]
-        if qid in existing and existing[qid].get("sql_answer", "").strip():
+        if (
+            qid in existing
+            and existing[qid].get("sql_answer", "").strip()
+            and existing[qid].get("think", "").strip()
+        ):
             results.append(existing[qid])
-            logger.info(f"[{model_name}] Skipping q{qid} (already answered)")
+            logger.info(f"[{model_name}] Skipping q{qid} (already complete)")
         else:
             results.append(None)  # placeholder
             pending_indices.append(i)
@@ -181,6 +248,7 @@ def run_model(
 
     # Create model instance
     model = create_model(model_name)
+    fail_log = _get_fail_logger(model_name)
 
     # Lock for checkpointing
     lock = threading.Lock()
@@ -190,7 +258,7 @@ def run_model(
         nonlocal completed_since_checkpoint
         row = questions[idx]
         try:
-            result = process_question(model, row)
+            result = process_question(model, row, fail_log)
             with lock:
                 results[idx] = result
                 completed_since_checkpoint += 1
@@ -201,6 +269,10 @@ def run_model(
                     completed_since_checkpoint = 0
         except Exception as e:
             logger.error(f"[{model_name}] Error on q{row['question_id']}: {e}")
+            fail_log.warning(
+                f"q{row['question_id']} | schema={row['schema_id']} | "
+                f"exception: {e}"
+            )
             # Keep row as-is (no answer)
             with lock:
                 result = dict(row)

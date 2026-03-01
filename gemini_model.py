@@ -25,15 +25,15 @@ class GeminiModel(BaseReasoningModel):
         if not api_key:
             raise ValueError("GEMINI_API_KEY not set in .env")
         self.client = genai.Client(api_key=api_key)
-        self.model_id = "gemini-3.1-pro-preview"
+        self.model_id = "gemini-2.5-pro" # "gemini-3.1-pro-preview"
 
     def generate(self, prompt: str) -> tuple[str, str]:
         response = self.client.models.generate_content(
             model=self.model_id,
             contents=prompt,
-            config=types.GenerateContentConfig(
-                thinking_config=types.ThinkingConfig(thinking_level="high")
-            ),
+            # config=types.GenerateContentConfig(
+            #     thinking_config=types.ThinkingConfig(thinking_level="high")
+            # ),
         )
 
         native_thinking = []
