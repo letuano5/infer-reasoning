@@ -219,3 +219,6 @@ venv/
 .env
 *.sqlite
 *.zip
+
+.DS_Store/
+.vscode/
