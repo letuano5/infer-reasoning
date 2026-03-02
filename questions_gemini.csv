@@ -1086,7 +1086,46 @@ WHERE
    - Logic tìm giá trị lớn nhất bằng subquery `SELECT MAX(...)` là chuẩn và tương thích với SQLite.
    - Không cần xử lý NULL vì `SUM` sẽ bỏ qua NULL và các khóa ngoại dường như là bắt buộc.
    - Truy vấn cuối cùng chỉ trả về tên trận đánh như yêu cầu."
-25,battle_death,Liệt kê các tàu có ít nhất một bản ghi thương vong nhưng không có ai bị thương trong tất cả các bản ghi đó.,L6,NL-L6,Implements 'no injuries across all records' via conditional aggregation; requires join and HAVING.,SELECT T1.name FROM ship AS T1 INNER JOIN death AS T2 ON T1.id = T2.caused_by_ship_id GROUP BY T1.id HAVING sum(T2.injured) = 0,
+25,battle_death,Liệt kê các tàu có ít nhất một bản ghi thương vong nhưng không có ai bị thương trong tất cả các bản ghi đó.,L6,NL-L6,Implements 'no injuries across all records' via conditional aggregation; requires join and HAVING.,"SELECT
+  T1.name
+FROM ship AS T1
+JOIN death AS T2
+  ON T1.id = T2.caused_by_ship_id
+GROUP BY
+  T1.id
+HAVING
+  SUM(T2.injured) = 0;","### 1. Mục tiêu & grain
+- **Mục tiêu:** Tìm tên của những con tàu thỏa mãn hai điều kiện: (1) có liên quan đến ít nhất một sự kiện thương vong, và (2) trong tất cả các sự kiện thương vong liên quan đến nó, không có ai bị thương.
+- **Loại câu trả lời:** Liệt kê.
+- **Grain:** Mỗi dòng trong kết quả là tên của một tàu (1 dòng = 1 tàu).
+### 2. Gắn khái niệm vào schema
+- **Tàu:** `ship` table, cụ thể là cột `ship.name`.
+- **Bản ghi thương vong:** `death` table.
+- **Liên kết giữa tàu và thương vong:** Khóa ngoại `death.caused_by_ship_id` tham chiếu đến `ship.id`.
+- **Có ít nhất một bản ghi thương vong:** Một tàu phải có ít nhất một `ship.id` tương ứng trong cột `death.caused_by_ship_id`. Điều này có thể được đảm bảo bằng cách sử dụng `INNER JOIN` giữa `ship` và `death`.
+- **Không có ai bị thương:** Cột `death.injured` phải bằng 0.
+- **Trong tất cả các bản ghi đó:** Điều này có nghĩa là đối với một tàu cụ thể, tổng số người bị thương (`SUM(death.injured)`) trên tất cả các bản ghi `death` liên quan phải bằng 0.
+### 3. Khung truy vấn
+- **Anchor table:** `ship`. Chúng ta cần bắt đầu từ tàu để lấy tên của chúng.
+- **CTE:** Không cần thiết, có thể giải quyết bằng cách nhóm và lọc.
+- **SELECT:** `ship.name`.
+### 4. Module logic (chỉ ghi module thật sự cần)
+- **JOIN:**
+  - `ship` (alias `T1`) cần được nối với `death` (alias `T2`).
+  - Đường join: `T1.id = T2.caused_by_ship_id`.
+  - Loại join: `INNER JOIN` là phù hợp nhất vì nó tự động lọc ra những con tàu có ít nhất một bản ghi thương vong.
+- **AGG (Aggregation):**
+  - Để kiểm tra điều kiện trên ""tất cả các bản ghi"" của một tàu, chúng ta cần nhóm các bản ghi lại theo từng tàu.
+  - `GROUP BY T1.id` (hoặc `T1.name`, nhưng nhóm theo khóa chính là tốt nhất).
+  - Sau khi nhóm, chúng ta sẽ áp dụng điều kiện lọc trên kết quả tổng hợp.
+  - **Hàm:** `SUM(T2.injured)`.
+  - **HAVING:** Điều kiện lọc trên nhóm là tổng số người bị thương phải bằng 0. `HAVING SUM(T2.injured) = 0`.
+### 5. Hoàn thiện & kiểm tra
+- **SELECT:** `SELECT T1.name` để lấy tên tàu.
+- **FROM/JOIN:** `FROM ship AS T1 JOIN death AS T2 ON T1.id = T2.caused_by_ship_id`.
+- **GROUP BY:** `GROUP BY T1.id`. Nhóm theo ID của tàu để tổng hợp tất cả các bản ghi thương vong của nó.
+- **HAVING:** `HAVING SUM(T2.injured) = 0` để chỉ giữ lại những tàu có tổng số người bị thương là 0.
+- **Kiểm tra:** Logic đã đúng. `JOIN` đảm bảo tàu có bản ghi thương vong. `GROUP BY` gom các bản ghi lại theo tàu. `HAVING` lọc ra những tàu có tổng số người bị thương bằng 0, điều này chỉ xảy ra khi mọi bản ghi thương vong riêng lẻ của tàu đó đều có số người bị thương là 0. Truy vấn này tuân thủ dialect SQLite và các ràng buộc đã cho."
 26,battle_death,Tìm các địa điểm ghi nhận mà tại đó tổng số người thiệt mạng chiếm ít nhất 80% tổng thương vong.,L6,NL-L6,High-level ratio constraint using REAL math and NULLIF; aggregation at location level; L6 metric reasoning.,"SELECT
   T1.note
 FROM death AS T1
@@ -1280,7 +1319,36 @@ WHERE
    - NULL handling: Trong trường hợp một trong hai hoặc cả hai tên chỉ huy là NULL, phép so sánh `col1 = col2` sẽ không trả về TRUE. Dữ liệu mẫu cho thấy có giá trị là 'Unknown'. Nếu `bulgarian_commander` và `latin_commander` đều là 'Unknown', chúng sẽ khớp nhau. Có thể thêm điều kiện `bulgarian_commander <> 'Unknown'` để loại bỏ những trường hợp không có ý nghĩa này, giả định người dùng muốn tìm những người chỉ huy có tên cụ thể.
    - Tên cột và bảng đều hợp lệ theo schema.
    - Truy vấn sử dụng các toán tử cơ bản (`SELECT`, `FROM`, `WHERE`, `=`) hoàn toàn tương thích với SQLite."
-31,battle_death,Tìm các tàu bị mất trong những trận mà kết cục là thắng lợi của Bulgaria và đồng thời tàu đó bị bắt giữ.,L5,NL-L2,Multi-condition join filter across ship and battle; L5 join with domain mapping on result/disposition values.,SELECT T1.name FROM ship AS T1 INNER JOIN battle AS T2 ON T1.lost_in_battle = T2.id WHERE T2.result = 'Bulgarian victory' AND T1.disposition_of_ship = 'Captured',
+31,battle_death,Tìm các tàu bị mất trong những trận mà kết cục là thắng lợi của Bulgaria và đồng thời tàu đó bị bắt giữ.,L5,NL-L2,Multi-condition join filter across ship and battle; L5 join with domain mapping on result/disposition values.,SELECT T1.name FROM ship AS T1 INNER JOIN battle AS T2 ON T1.lost_in_battle = T2.id WHERE T2.result = 'Bulgarian victory' AND T1.disposition_of_ship = 'Captured',"### 1. Mục tiêu & grain
+- **Mục tiêu**: Liệt kê tên của các con tàu thỏa mãn hai điều kiện cùng lúc. Đây là một câu hỏi dạng liệt kê (listing).
+- **Grain**: Mỗi dòng kết quả sẽ đại diện cho một con tàu. `1 dòng = 1 tàu`.
+### 2. Gắn khái niệm vào schema
+- **""các tàu""**: Ánh xạ tới bảng `ship`, cụ thể là cột `ship.name`.
+- **""bị mất trong những trận""**: Đây là mối quan hệ giữa tàu (`ship`) và trận đánh (`battle`). Schema cung cấp khóa ngoại `ship.lost_in_battle` tham chiếu đến `battle.id`.
+- **""kết cục là thắng lợi của Bulgaria""**: Đây là một điều kiện lọc trên bảng `battle`. Nó tương ứng với `battle.result = 'Bulgarian victory'`.
+- **""tàu đó bị bắt giữ""**: Đây là một điều kiện lọc trên bảng `ship`. Nó tương ứng với `ship.disposition_of_ship = 'Captured'`.
+### 3. Khung truy vấn
+- Cần lấy thông tin từ hai bảng: `ship` (tên tàu, tình trạng) và `battle` (kết quả trận đánh).
+- Do đó, cần phải JOIN hai bảng này lại với nhau.
+- Bảng neo (anchor) là `ship` vì mục tiêu cuối cùng là tìm thông tin về tàu.
+- `SELECT` cột `name` từ bảng `ship`.
+### 4. Module logic
+- **JOIN**:
+    - Sử dụng `INNER JOIN` để kết nối bảng `ship` và `battle`.
+    - Điều kiện join sẽ là khóa ngoại: `ship.lost_in_battle = battle.id`.
+    - Đặt alias `T1` cho `ship` và `T2` cho `battle`.
+- **FILTER**:
+    - Cần áp dụng hai điều kiện lọc bằng mệnh đề `WHERE` và kết hợp chúng bằng `AND`.
+    - Điều kiện 1: Kết quả trận đánh là thắng lợi của Bulgaria. `T2.result = 'Bulgarian victory'`.
+    - Điều kiện 2: Tình trạng của tàu là bị bắt giữ. `T1.disposition_of_ship = 'Captured'`.
+### 5. Hoàn thiện & kiểm tra
+- **ORDER BY / LIMIT**: Câu hỏi không yêu cầu sắp xếp hay giới hạn số lượng kết quả, nên không cần.
+- **NULL handling**: Không cần thiết vì đang lọc các giá trị chuỗi cụ thể.
+- **Kiểm tra**:
+    - Tất cả các cột (`name`, `lost_in_battle`, `id`, `result`, `disposition_of_ship`) đều tồn tại trong schema.
+    - Đã sử dụng alias cho bảng và prefix đầy đủ cho các cột.
+    - Cú pháp `INNER JOIN ... ON ... WHERE ... AND ...` là chuẩn SQLite.
+    - Truy vấn đã trả lời đúng và đủ yêu cầu của câu hỏi."
 32,battle_death,Tìm các trận đánh có cả tàu bị bắt giữ lẫn tàu bị đánh chìm.,L6,NL-L6,Conditional aggregation checks presence of two categories within each battle; L6 + implicit 'both' reasoning.,SELECT T1.name FROM battle AS T1 INNER JOIN ship AS T2 ON T1.id = T2.lost_in_battle WHERE T2.disposition_of_ship = 'Captured' INTERSECT SELECT T1.name FROM battle AS T1 INNER JOIN ship AS T2 ON T1.id = T2.lost_in_battle WHERE T2.disposition_of_ship = 'Scuttled',"1. Mục tiêu & grain
    - Mục tiêu: Liệt kê tên các trận đánh mà trong đó vừa có tàu bị bắt giữ (captured), vừa có tàu bị đánh chìm (scuttled).
    - Loại câu trả lời: Liệt kê.
@@ -1384,30 +1452,55 @@ GROUP BY
 - **Compatibility**: Truy vấn sử dụng các hàm và cú pháp chuẩn của SQLite (`LEFT JOIN`, `GROUP BY`, `SUM(CASE...)`, `COUNT`, `CAST`), hoàn toàn tương thích."
 35,battle_death,Tìm các tàu có số người thiệt mạng lớn hơn số người thiệt mạng trung bình của tất cả các tàu trong cùng trận đánh.,L10,NL-L4,Correlated subquery compares ship killed vs average within same battle; uses REAL avg; L10 comparative.,"WITH ShipTotalKills AS (
   SELECT
-    caused_by_ship_id,
-    SUM(killed) AS total_killed
-  FROM death
-  GROUP BY
-    caused_by_ship_id
-), BattleAvgKills AS (
-  SELECT
+    T1.name,
     T1.lost_in_battle,
-    AVG(T2.total_killed) AS avg_battle_killed
+    SUM(T2.killed) AS total_killed
   FROM ship AS T1
-  JOIN ShipTotalKills AS T2
+  JOIN death AS T2
     ON T1.id = T2.caused_by_ship_id
   GROUP BY
-    T1.lost_in_battle
+    T1.id
 )
 SELECT
-  T1.name
-FROM ship AS T1
-JOIN ShipTotalKills AS T2
-  ON T1.id = T2.caused_by_ship_id
-JOIN BattleAvgKills AS T3
-  ON T1.lost_in_battle = T3.lost_in_battle
+  T.name
+FROM (
+  SELECT
+    name,
+    total_killed,
+    AVG(total_killed) OVER (PARTITION BY lost_in_battle) AS avg_battle_killed
+  FROM ShipTotalKills
+) AS T
 WHERE
-  T2.total_killed > T3.avg_battle_killed;",
+  T.total_killed > T.avg_battle_killed;","### 1. Mục tiêu & grain
+- **Mục tiêu:** Tìm và liệt kê tên các tàu có số người thiệt mạng do chúng gây ra lớn hơn số người thiệt mạng trung bình của tất cả các tàu tham gia trong cùng trận đánh với tàu đó.
+- **Loại câu trả lời:** Liệt kê.
+- **Grain:** 1 dòng = 1 tên tàu (`ship.name`).
+### 2. Gắn khái niệm vào schema
+- **Tàu:** `ship`. Tên tàu là `ship.name`.
+- **Trận đánh:** Mỗi tàu được liên kết với một trận đánh qua khóa ngoại `ship.lost_in_battle`, tham chiếu đến `battle.id`.
+- **Số người thiệt mạng do một tàu gây ra:** Không có cột trực tiếp. Cần tính tổng (`SUM`) của cột `killed` trong bảng `death` cho mỗi tàu. Mối quan hệ được xác định qua `death.caused_by_ship_id` = `ship.id`.
+- **Số người thiệt mạng trung bình trong cùng trận đánh:** Đây là giá trị phức tạp cần tính toán. For a given battle, it's the average of the ""total killed per ship"" values for all ships that participated in that battle.
+### 3. Khung truy vấn
+- Cần tính toán theo nhiều bước, vì vậy sử dụng CTE (Common Table Expression) là cách tiếp cận tốt nhất để làm cho logic rõ ràng.
+- **CTE 1 (`ShipKills`):** Tính tổng số người thiệt mạng cho mỗi tàu.
+    - JOIN `ship` và `death`.
+    - `GROUP BY` theo `ship.id` để tính `SUM(death.killed)`. CTE này sẽ chứa `ship_id`, `ship_name`, `battle_id`, và `total_killed_by_ship`.
+- **Truy vấn chính:** Sử dụng kết quả từ CTE `ShipKills` và áp dụng một window function.
+    - Tính số người thiệt mạng trung bình cho mỗi trận đánh bằng `AVG(total_killed_by_ship) OVER (PARTITION BY battle_id)`.
+    - So sánh `total_killed_by_ship` của mỗi tàu với giá trị trung bình `avg_killed_in_battle` vừa tính được.
+    - `SELECT` ra tên tàu thỏa mãn điều kiện.
+### 4. Module logic (chỉ ghi module thật sự cần)
+- **JOIN:**
+    - `ship AS T1 JOIN death AS T2 ON T1.id = T2.caused_by_ship_id`. Đây là join cơ bản để liên kết tàu với số liệu thương vong mà nó gây ra.
+- **AGG:**
+    - `SUM(T2.killed)` kết hợp với `GROUP BY T1.id` để tính tổng số người chết cho mỗi tàu.
+- **RANK (Window Function):**
+    - `AVG(total_killed) OVER (PARTITION BY lost_in_battle)`: Đây là lõi của logic so sánh. Nó tính giá trị trung bình của tổng số người chết (`total_killed`) trên mỗi nhóm (`PARTITION`) là một trận đánh (`lost_in_battle`). Điều này cho phép so sánh giá trị của từng tàu với giá trị trung bình của nhóm mà không cần một join/subquery phức tạp khác.
+### 5. Hoàn thiện & kiểm tra
+- Truy vấn cuối cùng sẽ có cấu trúc `WITH ... AS (...) SELECT ... FROM (...) WHERE ...`.
+- Tất cả các cột đều được tiền tố hóa bằng alias bảng để rõ ràng và tránh lỗi.
+- Không có yêu cầu `ORDER BY` hay `LIMIT` nên không cần thêm vào.
+- Cú pháp sử dụng CTE và window function hoàn toàn tương thích với SQLite hiện đại."
 36,battle_death,"Trong từng trận đánh, hãy chọn ra tàu có tổng số người bị thương cao nhất (nếu bằng nhau thì chọn tàu có mã số nhỏ hơn).",L10,NL-L6,Correlated subquery selects top injured ship per battle with tie-break; L10 correlation and aggregated metric.,"WITH ShipTotalInjuries AS (
   SELECT
     T1.id AS battle_id,
@@ -1473,26 +1566,85 @@ WHERE
    - **Tên cột & dialect:** Tất cả các cột và hàm (`WITH`, `JOIN`, `SUM`, `ROW_NUMBER()`) đều tồn tại và tương thích với SQLite. Các cột đều được prefix đầy đủ với alias của bảng."
 37,battle_death,"Tính số thương vong cộng dồn theo thứ tự thời gian trận đánh (dựa trên thời điểm trận đánh), chỉ tính các trận có thể tách được ngày hợp lệ.",L13,NL-L6,Time-series running total over battle dates using date() and window SUM; L13 analytics.,"WITH BattleCasualties AS (
   SELECT
-    T1.name,
-    T1.date,
-    SUM(T3.killed + T3.injured) AS casualties_in_battle
+    T1.name AS battle_name,
+    T1.date AS battle_date,
+    SUM(COALESCE(T3.killed, 0) + COALESCE(T3.injured, 0)) AS total_casualties,
+    SUBSTR(T1.date, -4) || '-' ||
+    CASE
+      WHEN T1.date LIKE '%January%' THEN '01'
+      WHEN T1.date LIKE '%February%' THEN '02'
+      WHEN T1.date LIKE '%March%' THEN '03'
+      WHEN T1.date LIKE '%April%' THEN '04'
+      WHEN T1.date LIKE '%May%' THEN '05'
+      WHEN T1.date LIKE '%June%' THEN '06'
+      WHEN T1.date LIKE '%July%' THEN '07'
+      WHEN T1.date LIKE '%August%' THEN '08'
+      WHEN T1.date LIKE '%September%' THEN '09'
+      WHEN T1.date LIKE '%October%' THEN '10'
+      WHEN T1.date LIKE '%November%' THEN '11'
+      WHEN T1.date LIKE '%December%' THEN '12'
+    END || '-' ||
+    PRINTF('%02d', SUBSTR(T1.date, 1, INSTR(T1.date, ' ') - 1)) AS sortable_date
   FROM battle AS T1
   JOIN ship AS T2
     ON T1.id = T2.lost_in_battle
   JOIN death AS T3
     ON T2.id = T3.caused_by_ship_id
+  WHERE
+    T1.date LIKE '_% _% %'
   GROUP BY
-    T1.id
+    T1.id,
+    T1.name,
+    T1.date
 )
 SELECT
-  T.name,
-  T.date,
-  SUM(T.casualties_in_battle) OVER (
-    ORDER BY
-      SUBSTR(T.date, -4), CASE WHEN T.date LIKE '%Jan%' THEN 1 WHEN T.date LIKE '%Feb%' THEN 2 WHEN T.date LIKE '%Mar%' THEN 3 WHEN T.date LIKE '%Apr%' THEN 4 WHEN T.date LIKE '%May%' THEN 5 WHEN T.date LIKE '%Jun%' THEN 6 WHEN T.date LIKE '%Jul%' THEN 7 WHEN T.date LIKE '%Aug%' THEN 8 WHEN T.date LIKE '%Sep%' THEN 9 WHEN T.date LIKE '%Oct%' THEN 10 WHEN T.date LIKE '%Nov%' THEN 11 WHEN T.date LIKE '%Dec%' THEN 12 END, CASE WHEN T.date GLOB '[0-9]* *'
-      THEN CAST(SUBSTR(T.date, 1, INSTR(T.date, ' ') - 1) AS INTEGER) ELSE 1 END
-  ) AS cumulative_casualties
-FROM BattleCasualties AS T;",
+  T.battle_name,
+  T.battle_date,
+  SUM(T.total_casualties) OVER (ORDER BY T.sortable_date) AS cumulative_casualties
+FROM BattleCasualties AS T
+ORDER BY
+  T.sortable_date;","1. Mục tiêu & grain
+- **Mục tiêu**: Tính tổng thương vong cộng dồn (running total) theo thứ tự thời gian của các trận đánh.
+- **Loại câu trả lời**: Thống kê, dạng danh sách.
+- **Grain**: Mỗi dòng trong kết quả sẽ đại diện cho một trận đánh, hiển thị tên trận, ngày diễn ra, và tổng số thương vong cộng dồn cho đến thời điểm trận đánh đó.
+2. Gắn khái niệm vào schema
+- **Thương vong**: Không có cột nào tên là ""thương vong"". Giả định hợp lý nhất là `thương vong = số người chết + số người bị thương`. Điều này tương ứng với `death.killed + death.injured`.
+- **Trận đánh**: Ánh xạ trực tiếp tới bảng `battle`.
+- **Thời gian trận đánh**: Ánh xạ tới cột `battle.date`. Cột này có kiểu `TEXT` và định dạng không đồng nhất (ví dụ: '14 April 1205', 'June 1205').
+- **Thứ tự thời gian**: Để sắp xếp đúng, cần chuyển đổi cột `battle.date` (dạng TEXT) sang một định dạng có thể sắp xếp được, ví dụ như 'YYYY-MM-DD'.
+- **""chỉ tính các trận có thể tách được ngày hợp lệ""**: Đây là một yêu cầu lọc quan trọng. Các giá trị như 'June 1205' không có ngày cụ thể, nên sẽ bị loại bỏ. Tôi sẽ giả định một ngày hợp lệ là một chuỗi có chứa đủ thông tin ngày, tháng, và năm, ví dụ như có 2 dấu cách ('14 April 1205').
+3. Khung truy vấn
+- Cần tính tổng thương vong cho mỗi trận đánh trước. Đây là một bước trung gian, rất phù hợp để dùng Common Table Expression (CTE).
+- CTE sẽ JOIN 3 bảng: `battle` -> `ship` -> `death`.
+- Trong CTE:
+    - `GROUP BY` theo `battle.id` để tính tổng thương vong (`killed` + `injured`) cho mỗi trận.
+    - Tạo một cột `sortable_date` bằng cách chuyển đổi `battle.date` sang định dạng 'YYYY-MM-DD' để sắp xếp.
+    - Lọc (`WHERE`) để chỉ giữ lại những trận có ngày tháng đầy đủ.
+- Truy vấn chính sẽ SELECT từ CTE.
+- Dùng hàm cửa sổ `SUM(...) OVER (ORDER BY ...)` để tính tổng cộng dồn.
+4. Module logic
+- **JOIN**:
+    - `battle` (alias T1) JOIN `ship` (alias T2) trên `T1.id = T2.lost_in_battle`.
+    - Kết quả JOIN `death` (alias T3) trên `T2.id = T3.caused_by_ship_id`.
+- **AGG**: Trong CTE, `SUM(COALESCE(T3.killed, 0) + COALESCE(T3.injured, 0))` và `GROUP BY T1.id, T1.name, T1.date`.
+- **TEMPORAL / DATA TRANSFORMATION**:
+    - Để tạo cột `sortable_date` từ `battle.date` (ví dụ: '14 April 1205'):
+        - **Năm (YYYY)**: `SUBSTR(T1.date, -4)`
+        - **Tháng (MM)**: Dùng `CASE` statement để chuyển tên tháng (January, February, ...) thành số ('01', '02', ...).
+        - **Ngày (DD)**: `SUBSTR(T1.date, 1, INSTR(T1.date, ' ') - 1)`. Dùng `PRINTF('%02d', ...)` để đảm bảo có 2 chữ số (ví dụ: '01' thay vì '1').
+    - Kết hợp lại thành chuỗi 'YYYY-MM-DD'.
+- **FILTER**: Dùng `WHERE T1.date LIKE '_% _% %'` để lọc các hàng có định dạng ngày-tháng-năm (có 2 khoảng trắng).
+- **RANK (Window Function)**:
+    - `SUM(casualties_per_battle) OVER (ORDER BY sortable_date ASC)` để tính tổng cộng dồn.
+5. Hoàn thiện & kiểm tra
+- **ORDER BY**: Kết quả cuối cùng cần được sắp xếp theo `sortable_date` để hiển thị theo thứ tự thời gian.
+- **NULL handling**: Dùng `COALESCE` cho `killed` và `injured` để phòng trường hợp có giá trị NULL.
+- **Prefixes**: Tất cả các cột trong JOIN sẽ được tiền tố đầy đủ bằng alias của bảng (ví dụ: `T1.id`, `T3.killed`).
+- **SQLite compatibility**: Các hàm `SUBSTR`, `INSTR`, `CASE`, `PRINTF`, và hàm cửa sổ `SUM() OVER ()` đều được hỗ trợ trong SQLite.
+- **Logic**: Luồng logic đã chặt chẽ:
+    1. Lọc và tính toán dữ liệu cơ sở cho mỗi trận đánh trong CTE.
+    2. Sử dụng kết quả từ CTE để thực hiện tính toán cộng dồn trong truy vấn chính.
+    Điều này đảm bảo tính đúng đắn và dễ đọc."
 38,battle_death,"Với mỗi trận đánh có thể tách được ngày hợp lệ, hãy tính số ngày chênh lệch so với trận đánh trước đó theo thứ tự thời gian.",L13,NL-L6,Uses LAG over ordered battle dates and julianday difference; L13 time-series with analytic function.,"WITH BattleWithParsedDate AS (
   SELECT
     name,
@@ -1688,18 +1840,56 @@ HAVING
    - Tất cả tên cột (`name`, `id`, `lost_in_battle`, `ship_type`, `caused_by_ship_id`, `killed`) đều có trong schema.
    - Alias bảng và prefix cột được sử dụng đầy đủ.
    - Cú pháp `CASE WHEN` và `HAVING` tương thích với SQLite."
-42,battle_death,"Liệt kê các tàu thuộc cùng một trận đánh và cùng loại tàu, đồng thời chỉ giữ lại các nhóm có ít nhất 2 tàu.",L6,NL-L6,"Groups by battle and ship_type, lists names via GROUP_CONCAT, filters groups with HAVING COUNT>=2; L6.","SELECT
+42,battle_death,"Liệt kê các tàu thuộc cùng một trận đánh và cùng loại tàu, đồng thời chỉ giữ lại các nhóm có ít nhất 2 tàu.",L6,NL-L6,"Groups by battle and ship_type, lists names via GROUP_CONCAT, filters groups with HAVING COUNT>=2; L6.","WITH ship_groups AS (
+  SELECT
+    T1.lost_in_battle,
+    T1.ship_type
+  FROM ship AS T1
+  GROUP BY
+    T1.lost_in_battle,
+    T1.ship_type
+  HAVING
+    COUNT(T1.id) >= 2
+)
+SELECT
   T2.name,
   T1.ship_type,
-  COUNT(T1.id)
+  T1.name
 FROM ship AS T1
 INNER JOIN battle AS T2
   ON T1.lost_in_battle = T2.id
-GROUP BY
+INNER JOIN ship_groups AS T3
+  ON T1.lost_in_battle = T3.lost_in_battle AND T1.ship_type = T3.ship_type
+ORDER BY
   T2.name,
-  T1.ship_type
-HAVING
-  COUNT(T1.id) >= 2;",
+  T1.ship_type;","1. Mục tiêu & grain
+- **Mục tiêu**: Liệt kê chi tiết các tàu thỏa mãn điều kiện: chúng thuộc về một nhóm các tàu có cùng một trận đánh VÀ cùng một loại tàu, và nhóm đó phải có từ 2 tàu trở lên.
+- **Loại câu trả lời**: Liệt kê (listing).
+- **Grain**: 1 dòng = 1 tàu (cùng với thông tin về trận đánh và loại tàu của nó).
+2. Gắn khái niệm vào schema
+- ""các tàu"": Bảng `ship`, cụ thể là cột `ship.name`.
+- ""cùng một trận đánh"": Nhóm theo `ship.lost_in_battle`, là khóa ngoại tham chiếu đến `battle.id`. Ta sẽ hiển thị `battle.name` để kết quả dễ đọc.
+- ""cùng loại tàu"": Nhóm theo `ship.ship_type`.
+- ""nhóm có ít nhất 2 tàu"": Điều kiện lọc sau khi gom nhóm, sử dụng `HAVING COUNT(*) >= 2`.
+3. Khung truy vấn
+- Ta cần join 2 bảng: `ship` và `battle`. Bảng `death` không cần thiết.
+- Logic giải quyết bài toán này gồm 2 bước:
+    1.  Tìm ra các ""nhóm"" đủ điều kiện. Một ""nhóm"" được định nghĩa bởi cặp (`lost_in_battle`, `ship_type`) và phải có số lượng tàu (`COUNT`) lớn hơn hoặc bằng 2.
+    2.  Liệt kê tất cả các tàu thuộc về các nhóm đã tìm thấy ở bước 1.
+- Một CTE (Common Table Expression) rất phù hợp để thực hiện bước 1. CTE này sẽ tạo ra một bảng tạm chứa các cặp (`lost_in_battle`, `ship_type`) hợp lệ.
+- Truy vấn chính sẽ `JOIN` bảng `ship`, `battle`, và CTE vừa tạo để lọc ra và hiển thị thông tin các tàu cần thiết.
+- Các cột cần `SELECT`: `battle.name` (tên trận đánh), `ship.ship_type` (loại tàu), `ship.name` (tên tàu).
+4. Module logic
+- **JOIN**:
+    1.  `ship` AS `T1` JOIN `battle` AS `T2` ON `T1.lost_in_battle = T2.id` để lấy tên trận đánh.
+    2.  JOIN kết quả trên với CTE (tạm gọi là `qualifying_groups` AS `T3`) ON `T1.lost_in_battle = T3.lost_in_battle` AND `T1.ship_type = T3.ship_type`.
+- **AGG (trong CTE)**:
+    - `GROUP BY T1.lost_in_battle, T1.ship_type`: Để tạo các nhóm tàu theo trận đánh và loại tàu.
+    - `HAVING COUNT(T1.id) >= 2`: Để lọc ra các nhóm có ít nhất 2 tàu.
+5. Hoàn thiện & kiểm tra
+- **ORDER BY**: Sắp xếp kết quả để dễ đọc hơn, ví dụ theo tên trận đánh, sau đó đến loại tàu. `ORDER BY T2.name, T1.ship_type`.
+- **Alias**: Sử dụng alias cho tất cả các bảng (`T1`, `T2`, `T3`) và prefix đầy đủ cho các cột trong các mệnh đề `SELECT`, `JOIN`, `ORDER BY` để đảm bảo sự rõ ràng và tuân thủ ràng buộc.
+- **SQLite compatibility**: Query sử dụng CTE, JOIN, GROUP BY, HAVING, là các tính năng tiêu chuẩn của SQLite. Không có hàm đặc biệt nào được sử dụng."
 43,battle_death,Tìm các địa điểm ghi nhận đã xuất hiện trong nhiều hơn một trận đánh khác nhau (tính qua các tàu gây ra).,L5,NL-L6,3-table join with DISTINCT battle counting per location note; L5 multi-join with comparative HAVING.,SELECT T1.note FROM death AS T1 JOIN ship AS T2 ON T1.caused_by_ship_id = T2.id JOIN battle AS T3 ON T2.lost_in_battle = T3.id GROUP BY T1.note HAVING count(DISTINCT T3.id)  >  1,"1. Mục tiêu & grain
 - Mục tiêu: Tìm các địa điểm (`note` trong bảng `death`) mà tại đó đã ghi nhận các sự kiện tử vong (`death`) liên quan đến các con tàu (`ship`) bị chìm trong nhiều hơn một trận đánh (`battle`) khác nhau.
 - Loại câu trả lời: Liệt kê (danh sách các địa điểm).
@@ -1812,7 +2002,36 @@ WHERE
    - Logic sắp xếp ngày tháng đủ mạnh để xử lý các định dạng trong ví dụ.
    - Điều kiện `!=` hoạt động đúng để so sánh các chỉ huy.
    - Truy vấn tuân thủ dialect SQLite và các ràng buộc đã cho."
-45,battle_death,Tìm các tàu mà tất cả các bản ghi thương vong của tàu đó đều có số người bị thương bằng 0.,L6,NL-L6,Universal condition implemented via conditional aggregation; L6 implicit 'all records' reasoning.,SELECT T2.name FROM death AS T1 JOIN ship AS T2 ON T1.caused_by_ship_id = T2.id GROUP BY T2.id HAVING max(T1.injured) = 0,
+45,battle_death,Tìm các tàu mà tất cả các bản ghi thương vong của tàu đó đều có số người bị thương bằng 0.,L6,NL-L6,Universal condition implemented via conditional aggregation; L6 implicit 'all records' reasoning.,SELECT T1.name FROM ship AS T1 INNER JOIN death AS T2 ON T1.id = T2.caused_by_ship_id GROUP BY T1.id HAVING MAX(T2.injured) = 0,"1.  **Mục tiêu & grain**
+    -   **Mục tiêu:** Tìm tên của các con tàu mà tất cả các sự kiện thương vong liên quan đến chúng đều không có người bị thương.
+    -   **Loại câu trả lời:** Liệt kê (danh sách tên tàu).
+    -   **Grain:** 1 dòng = 1 tên tàu.
+2.  **Gắn khái niệm vào schema**
+    -   **""Tàu"":** Bảng `ship`, cụ thể là cột `ship.name`.
+    -   **""Bản ghi thương vong"":** Bảng `death`.
+    -   **""của tàu đó"":** Mối liên kết được xác định qua khóa ngoại `death.caused_by_ship_id = ship.id`.
+    -   **""Số người bị thương"":** Bảng `death`, cột `death.injured`.
+    -   **Điều kiện ""tất cả các bản ghi ... đều có số người bị thương bằng 0"":** Điều này có nghĩa là đối với một con tàu nhất định, tất cả các hàng trong bảng `death` liên kết với nó phải có giá trị `injured` là 0.
+3.  **Khung truy vấn**
+    -   **Anchor table:** `ship` vì chúng ta cần trả về tên tàu.
+    -   **CTE:** Không thực sự cần thiết, một truy vấn với `GROUP BY` và `HAVING` là đủ.
+    -   **SELECT:** `T1.name`.
+4.  **Module logic**
+    -   **JOIN:** Cần kết nối `ship` với `death` để lọc các tàu dựa trên dữ liệu thương vong của chúng.
+        -   `ship` (alias `T1`) `JOIN` `death` (alias `T2`).
+        -   Khóa join: `T1.id = T2.caused_by_ship_id`.
+        -   Loại join: `INNER JOIN` là phù hợp, vì chúng ta chỉ quan tâm đến những tàu có ít nhất một bản ghi thương vong.
+    -   **AGG (Aggregation):** Để kiểm tra điều kiện ""tất cả"", chúng ta sẽ nhóm các bản ghi theo từng tàu và sau đó áp dụng một điều kiện lọc trên cả nhóm.
+        -   **GROUP BY:** `GROUP BY T1.id, T1.name`. Việc nhóm theo khóa chính `T1.id` là cách làm tốt nhất để đảm bảo mỗi tàu là một nhóm duy nhất.
+        -   **HAVING:** Đây là nơi để kiểm tra điều kiện ""tất cả các bản ghi có `injured` = 0"". Một cách hiệu quả để làm điều này là kiểm tra xem giá trị *lớn nhất* của `injured` trong nhóm có bằng 0 hay không. Nếu `MAX(T2.injured) = 0`, thì tất cả các giá trị `injured` khác trong nhóm đó (vốn không thể âm) cũng phải bằng 0. Do đó, điều kiện là `HAVING MAX(T2.injured) = 0`.
+5.  **Hoàn thiện & kiểm tra**
+    -   **ORDER BY:** Không có yêu cầu sắp xếp cụ thể, nên bỏ qua.
+    -   **NULL handling:** Cột `injured` là kiểu `INT`. Giả sử nó không chứa giá trị `NULL`. Điều kiện `MAX(T2.injured) = 0` hoạt động tốt trong trường hợp này.
+    -   **Kiểm tra logic:**
+        -   Truy vấn sẽ join `ship` và `death`.
+        -   Nó nhóm kết quả theo từng tàu.
+        -   Sau đó, nó chỉ giữ lại những nhóm (những con tàu) mà giá trị `injured` lớn nhất trong tất cả các bản ghi liên quan là 0. Điều này chính xác đáp ứng yêu cầu ""tất cả các bản ghi thương vong của tàu đó đều có số người bị thương bằng 0"".
+        -   Tên cột và alias đều tuân thủ các ràng buộc."
 46,battle_death,"Liệt kê các trận đánh mà có ít nhất một tàu bị mất, nhưng không có tàu nào trong trận đó có bất kỳ bản ghi thương vong nào.",L10,NL-L6,Uses correlated EXISTS inside aggregate CASE to enforce 'no ships have any death records' while ships exist; L10 correlated logic.,SELECT T1.name FROM battle AS T1 JOIN ship AS T2 ON T1.id = T2.lost_in_battle LEFT JOIN death AS T3 ON T2.id = T3.caused_by_ship_id GROUP BY T1.id HAVING count(T3.id) = 0,"1. Mục tiêu & grain
    - **Mục tiêu:** Tìm tên của các trận đánh (battle) thỏa mãn hai điều kiện đồng thời:
      1. Có ít nhất một tàu (`ship`) bị mất trong trận đánh đó.
@@ -1942,14 +2161,9 @@ ORDER BY
    - Tên cột: Đặt tên cột kết quả là `percentage_contribution` cho rõ nghĩa.
    - NULL handling: Các phép `JOIN` là `INNER JOIN`, sẽ tự động loại bỏ các trận không có tàu hoặc tàu không gây ra thương vong nào, điều này phù hợp với yêu cầu. `SUM` sẽ trả về `NULL` nếu không có dòng nào, nhưng trong trường hợp này, các phép join đảm bảo luôn có dòng để tính tổng.
    - Dialect: Toàn bộ cú pháp (WITH, JOIN, GROUP BY, SUM, CAST) đều tương thích với SQLite."
-49,battle_death,Xếp hạng các trận đánh theo mức độ 'đẫm máu' được tính bằng tổng số người thiệt mạng chia cho số tàu bị mất trong trận (nếu không có tàu thì bỏ qua).,L15,NL-L6,Complex metric (ratio) with REAL casting and NULLIF plus window ranking; multiple steps and joins qualify L15.,"-- This query ranks battles based on a 'bloodiness' metric.
--- The metric is calculated as the total number of people killed divided by the number of ships lost in each battle.
--- Battles where no ships were lost are implicitly excluded by the INNER JOINs.
--- The query joins the battle, ship, and death tables to gather the necessary information.
--- It then groups the results by battle and calculates the total killed and the count of distinct ships lost.
--- Finally, it computes the bloodiness ratio and orders the battles in descending order of this ratio.
-SELECT
-  T1.name
+49,battle_death,Xếp hạng các trận đánh theo mức độ 'đẫm máu' được tính bằng tổng số người thiệt mạng chia cho số tàu bị mất trong trận (nếu không có tàu thì bỏ qua).,L15,NL-L6,Complex metric (ratio) with REAL casting and NULLIF plus window ranking; multiple steps and joins qualify L15.,"SELECT
+  T1.name,
+  SUM(T3.killed) * 1.0 / COUNT(DISTINCT T2.id) AS muc_do_dam_mau
 FROM battle AS T1
 INNER JOIN ship AS T2
   ON T1.id = T2.lost_in_battle
@@ -1958,9 +2172,45 @@ INNER JOIN death AS T3
 GROUP BY
   T1.id
 HAVING
-  count(T2.id) <> 0
+  COUNT(DISTINCT T2.id) > 0
 ORDER BY
-  CAST(sum(T3.killed) AS REAL) / count(T2.id) DESC;",
+  muc_do_dam_mau DESC;","1. Mục tiêu & grain
+   - Mục tiêu: Xếp hạng các trận đánh (battles) dựa trên một chỉ số ""đẫm máu"". Chỉ số này được tính bằng tổng số người thiệt mạng (total killed) chia cho tổng số tàu bị mất (total ships lost) trong trận đó. Các trận không có tàu bị mất sẽ bị bỏ qua.
+   - Loại câu trả lời: Đây là một câu hỏi xếp hạng (ranking), yêu cầu một danh sách các trận đánh được sắp xếp.
+   - Grain: Mỗi dòng trong kết quả đầu ra sẽ đại diện cho một trận đánh (1 dòng = 1 trận đánh).
+2. Gắn khái niệm vào schema
+   - ""trận đánh"": Map tới bảng `battle`, cụ thể là cột `battle.name`.
+   - ""tổng số người thiệt mạng"": Map tới cột `killed` trong bảng `death`. Để có tổng số cho mỗi trận, ta cần tính `SUM(death.killed)`.
+   - ""số tàu bị mất trong trận"": Map tới bảng `ship`. Để có tổng số cho mỗi trận, ta cần đếm số tàu, tức là `COUNT(ship.id)`.
+   - Mối quan hệ giữa các khái niệm: Để liên kết số người chết với một trận đánh, ta cần đi qua chuỗi join: `battle` -> `ship` -> `death`.
+     - `battle.id` = `ship.lost_in_battle`
+     - `ship.id` = `death.caused_by_ship_id`
+   - Điều kiện ""nếu không có tàu thì bỏ qua"": Điều này có nghĩa là mẫu số (số tàu bị mất) phải lớn hơn 0.
+3. Khung truy vấn
+   - Anchor table: `battle` là bảng chính vì grain của chúng ta là trận đánh.
+   - CTE: Không bắt buộc nhưng có thể dùng để làm rõ logic tính toán tổng số người chết và số tàu cho mỗi trận trước khi tính tỷ lệ. Tuy nhiên, với logic này, một truy vấn đơn với `GROUP BY` là đủ và hiệu quả.
+   - Các field sẽ SELECT: `battle.name`, và một cột tính toán cho ""mức độ đẫm máu"".
+4. Module logic
+   - JOIN:
+     - `battle` (alias `T1`) INNER JOIN `ship` (alias `T2`) ON `T1.id = T2.lost_in_battle`.
+     - INNER JOIN `death` (alias `T3`) ON `T2.id = T3.caused_by_ship_id`.
+     - Dùng `INNER JOIN` là hợp lý vì chúng ta chỉ quan tâm đến các trận đánh có tàu bị mất VÀ những tàu đó gây ra thương vong.
+   - AGG:
+     - `GROUP BY T1.id, T1.name` để tổng hợp số liệu cho từng trận đánh.
+     - `SUM(T3.killed)` để tính tổng số người thiệt mạng.
+     - `COUNT(DISTINCT T2.id)` để đếm số tàu bị mất duy nhất trong mỗi trận. Dùng `DISTINCT` là rất quan trọng, vì một tàu có thể liên quan đến nhiều bản ghi `death` khác nhau, nếu không dùng `DISTINCT` sẽ đếm lặp.
+   - RANK:
+     - Sắp xếp kết quả theo chỉ số ""đẫm máu"" đã tính.
+     - `ORDER BY (SUM(T3.killed) * 1.0 / COUNT(DISTINCT T2.id)) DESC`.
+     - Nhân với `1.0` để đảm bảo phép chia là phép chia số thực, tránh việc SQLite thực hiện phép chia số nguyên và làm tròn kết quả.
+   - FILTERING:
+     - Điều kiện ""nếu không có tàu thì bỏ qua"" được xử lý bằng `HAVING COUNT(DISTINCT T2.id) > 0`. Điều này cũng giúp tránh lỗi chia cho không. `INNER JOIN` cũng đã ngầm lọc các trận không có tàu.
+5. Hoàn thiện & kiểm tra
+   - ORDER BY: Đã có `ORDER BY ... DESC` để xếp hạng từ cao đến thấp.
+   - NULL handling: Không có vấn đề về NULL ở đây vì các khóa ngoại và `INNER JOIN`. `HAVING` clause đã xử lý việc chia cho 0.
+   - COUNT(*) vs COUNT(col): Đã chọn `COUNT(DISTINCT T2.id)` một cách chính xác để tránh đếm lặp.
+   - Tên cột và dialect: Tất cả các cột và hàm (`SUM`, `COUNT`, `DISTINCT`) đều tồn tại trong schema và tương thích với SQLite.
+   - Alias: Sử dụng alias cho các bảng (`T1`, `T2`, `T3`) và cột tính toán (`muc_do_dam_mau`) để truy vấn rõ ràng."
 50,battle_death,Tìm các trận đánh mà tổng số người thiệt mạng do các tàu trong trận đó gây ra lớn hơn tổng số người thiệt mạng trung bình của toàn bộ các trận.,L8,NL-L4,CTE computes per-battle killed then compares to global average with REAL casting; L8 + comparative.,"WITH BattleKills AS (
   SELECT
     T1.name,
@@ -2448,17 +2698,17 @@ WHERE
 61,battle_death,Tìm các tàu mà tổng số người thiệt mạng của tàu đó chiếm trên 50% tổng số người thiệt mạng trong chính trận đánh mà tàu đó bị mất.,L15,NL-L6,"Multi-CTE builds ship and battle totals, computes within-battle share with REAL math, then filters by >50%; L15 complex metric.","WITH ShipTotalKilled AS (
   SELECT
     caused_by_ship_id,
-    SUM(killed) AS total_killed_by_ship
+    SUM(killed) AS total_ship_killed
   FROM death
   GROUP BY
     caused_by_ship_id
 ), BattleTotalKilled AS (
   SELECT
-    T1.lost_in_battle,
-    SUM(T2.killed) AS total_killed_in_battle
+    T1.lost_in_battle AS battle_id,
+    SUM(T3.killed) AS total_battle_killed
   FROM ship AS T1
-  JOIN death AS T2
-    ON T1.id = T2.caused_by_ship_id
+  JOIN death AS T3
+    ON T1.id = T3.caused_by_ship_id
   GROUP BY
     T1.lost_in_battle
 )
@@ -2468,9 +2718,49 @@ FROM ship AS T1
 JOIN ShipTotalKilled AS T2
   ON T1.id = T2.caused_by_ship_id
 JOIN BattleTotalKilled AS T3
-  ON T1.lost_in_battle = T3.lost_in_battle
+  ON T1.lost_in_battle = T3.battle_id
 WHERE
-  CAST(T2.total_killed_by_ship AS REAL) * 2 > T3.total_killed_in_battle;",
+  T2.total_ship_killed > 0.5 * T3.total_battle_killed;","### 1) Mục tiêu & grain
+- **Mục tiêu**: Liệt kê tên các tàu thỏa mãn một điều kiện so sánh. Điều kiện đó là: tổng số người chết do tàu đó gây ra phải lớn hơn 50% tổng số người chết trong trận chiến mà con tàu đó bị mất.
+- **Loại câu trả lời**: Liệt kê (danh sách tên tàu).
+- **Grain**: 1 dòng = 1 tàu.
+### 2) Gắn khái niệm vào schema
+- **""Các tàu""**: Bảng `ship`, cụ thể là cột `ship.name`.
+- **""Tổng số người thiệt mạng của tàu đó""**: Cần tính tổng `death.killed` cho mỗi tàu. Liên kết qua `ship.id` và `death.caused_by_ship_id`. Vậy, ta cần `SUM(T3.killed)` và `GROUP BY T2.id`.
+- **""Trận đánh mà tàu đó bị mất""**: Liên kết từ tàu đến trận đánh thông qua `ship.lost_in_battle = battle.id`.
+- **""Tổng số người thiệt mạng trong chính trận đánh đó""**: Đây là một phép tính tổng hợp phức tạp hơn. Ta cần:
+    1. Xác định trận đánh (`battle.id`).
+    2. Tìm *tất cả* các tàu bị mất trong trận đánh đó (join `battle` và `ship` qua `lost_in_battle`).
+    3. Tìm *tất cả* các ca tử vong liên quan đến *tất cả* các tàu đó (join `ship` và `death` qua `caused_by_ship_id`).
+    4. Tính tổng `death.killed` cho nhóm này.
+- **""chiếm trên 50%""**: Điều kiện so sánh: `(Tổng người chết của tàu) > 0.5 * (Tổng người chết của trận đánh)`.
+### 3) Khung truy vấn
+- Do cần tính hai mức tổng hợp khác nhau (tổng theo tàu và tổng theo trận đánh), việc sử dụng CTE (Common Table Expressions) là hợp lý nhất để làm rõ logic.
+- **CTE 1 (`ShipTotalKilled`)**: Tính tổng số người thiệt mạng cho mỗi tàu.
+    - `SELECT caused_by_ship_id, SUM(killed) AS ship_kills FROM death GROUP BY caused_by_ship_id`
+- **CTE 2 (`BattleTotalKilled`)**: Tính tổng số người thiệt mạng cho mỗi trận đánh.
+    - `SELECT T1.lost_in_battle, SUM(T2.killed) AS battle_kills FROM ship AS T1 JOIN death AS T2 ON T1.id = T2.caused_by_ship_id GROUP BY T1.lost_in_battle`
+- **Truy vấn chính**:
+    - `SELECT T1.name`
+    - `FROM ship AS T1`
+    - `JOIN` CTE 1 (`ShipTotalKilled`) để lấy số người chết của từng tàu.
+    - `JOIN` CTE 2 (`BattleTotalKilled`) để lấy số người chết của trận đánh tương ứng.
+    - Áp dụng điều kiện `WHERE` để so sánh hai giá trị tổng hợp này.
+### 4) Module logic
+- **JOIN**:
+    1.  Trong CTE `BattleTotalKilled`: `ship` JOIN `death` trên `ship.id = death.caused_by_ship_id`.
+    2.  Trong truy vấn chính:
+        - `ship` JOIN `ShipTotalKilled` trên `ship.id = ShipTotalKilled.caused_by_ship_id`.
+        - Kết quả trên JOIN `BattleTotalKilled` trên `ship.lost_in_battle = BattleTotalKilled.lost_in_battle`.
+- **AGG**:
+    - `SUM(killed)` trong cả hai CTE, với `GROUP BY` tương ứng là `caused_by_ship_id` và `lost_in_battle`.
+- **Filtering**: Điều kiện sẽ nằm trong mệnh đề `WHERE` của truy vấn chính: `ship_kills > 0.5 * battle_kills`. Lưu ý rằng SQLite xử lý phép nhân với số thực (0.5) một cách chính xác.
+### 5) Hoàn thiện & kiểm tra
+- **ORDER BY**: Không được yêu cầu, có thể bỏ qua.
+- **NULL handling**: `SUM` sẽ trả về `NULL` nếu tất cả giá trị đều là `NULL`, và bỏ qua `NULL` khi tính tổng. Các phép `JOIN` (mặc định là `INNER JOIN`) sẽ tự động loại bỏ các tàu không có trong bảng `death` hoặc không được gán cho một trận đánh, điều này phù hợp với logic của câu hỏi.
+- **Tên cột**: Tất cả các cột (`id`, `name`, `lost_in_battle`, `caused_by_ship_id`, `killed`) đều tồn tại trong schema.
+- **SQLite compatible**: Truy vấn sử dụng CTE, JOIN, SUM, GROUP BY là hoàn toàn tương thích với SQLite.
+- **Logic**: Logic tách bạch hai mức tính tổng bằng CTE, sau đó kết hợp lại để so sánh là một cách tiếp cận rõ ràng và chính xác, tránh được các lỗi tính toán sai do window functions phức tạp hoặc subquery lồng nhau."
 62,battle_death,"Xếp hạng các trận đánh theo số lượng địa điểm ghi nhận khác nhau liên quan đến trận đó (tính qua các tàu gây ra), đồng thời cho biết con số này.",L12,NL-L6,Computes distinct location notes per battle then ranks via window function; L12 window + multi-join.,"SELECT
   T1.name,
   COUNT(DISTINCT T3.note) AS so_luong_dia_diem_khac_nhau
@@ -5154,19 +5444,35 @@ SELECT Location FROM match WHERE Location LIKE '%London%'","### 1) Mục tiêu &
    - Logic `LEFT JOIN ... WHERE ... IS NULL` đã xử lý chính xác điều kiện ""không tồn tại"".
    - Các tên bảng và cột (`aircraft`, `aircraft.Aircraft_ID`, `match.Winning_Aircraft`, `airport_aircraft.Aircraft_ID`) đều tồn tại trong schema.
    - Đã sử dụng alias cho các bảng và prefix cho các cột theo yêu cầu."
-144,aircraft,Những sân bay có thể tiếp nhận cả hai kiểu máy bay “Robinson R-22” và “Bell 206B3 JetRanger” là những sân bay nào?,L7,NL-L3,INTERSECT finds airports that appear in both aircraft-assignment sets.,"SELECT
-  T1.Airport_Name
-FROM airport AS T1
-JOIN airport_aircraft AS T2
-  ON T1.Airport_ID = T2.Airport_ID
-JOIN aircraft AS T3
-  ON T2.Aircraft_ID = T3.Aircraft_ID
-WHERE
-  T3.Aircraft IN ('Robinson R-22', 'Bell 206B3 JetRanger')
-GROUP BY
-  T1.Airport_Name
-HAVING
-  COUNT(T3.Aircraft) = 2;",
+144,aircraft,Những sân bay có thể tiếp nhận cả hai kiểu máy bay “Robinson R-22” và “Bell 206B3 JetRanger” là những sân bay nào?,L7,NL-L3,INTERSECT finds airports that appear in both aircraft-assignment sets.,"SELECT T1.Airport_Name FROM airport AS T1 JOIN airport_aircraft AS T2 ON T1.Airport_ID = T2.Airport_ID JOIN aircraft AS T3 ON T2.Aircraft_ID = T3.Aircraft_ID WHERE T3.Aircraft IN ('Robinson R-22', 'Bell 206B3 JetRanger') GROUP BY T1.Airport_ID HAVING count(*) = 2","1. Mục tiêu & grain
+- Mục tiêu: Liệt kê tên các sân bay có thể tiếp nhận cả hai loại máy bay ""Robinson R-22"" và ""Bell 206B3 JetRanger"". Đây là một câu hỏi dạng ""liệt kê"".
+- Grain: Mỗi dòng trong kết quả cuối cùng sẽ là một tên sân bay. `1 dòng = 1 sân bay`.
+2. Gắn khái niệm vào schema
+- ""Sân bay"": Ánh xạ đến bảng `airport`, cụ thể là cột `Airport_Name`. `Airport_ID` sẽ được dùng để join.
+- ""Kiểu máy bay"": Ánh xạ đến bảng `aircraft`, cụ thể là cột `Aircraft`. `Aircraft_ID` sẽ được dùng để join.
+- ""Robinson R-22"" và ""Bell 206B3 JetRanger"": Đây là các giá trị cụ thể trong cột `aircraft.Aircraft`.
+- ""có thể tiếp nhận"": Mối quan hệ giữa sân bay và máy bay được thể hiện qua bảng trung gian `airport_aircraft`, liên kết `Airport_ID` và `Aircraft_ID`.
+- ""cả hai"": Đây là điều kiện quan trọng nhất. Một sân bay phải được liên kết với *cả hai* loại máy bay này, không phải chỉ một trong hai.
+3. Khung truy vấn
+- Anchor table: `airport` vì chúng ta cần lấy `Airport_Name` làm kết quả cuối cùng.
+- JOINs: Cần join 3 bảng: `airport` -> `airport_aircraft` -> `aircraft`.
+- CTE: Không bắt buộc, có thể giải quyết bằng `GROUP BY` và `HAVING`.
+- SELECT: Sẽ `SELECT` cột `airport.Airport_Name`.
+4. Module logic
+- JOIN:
+    1. `airport` (alias T1) `JOIN` `airport_aircraft` (alias T3) trên `T1.Airport_ID = T3.Airport_ID`.
+    2. `airport_aircraft` (alias T3) `JOIN` `aircraft` (alias T2) trên `T3.Aircraft_ID = T2.Aircraft_ID`.
+- Lọc (Filtering):
+    - Cần lọc các bản ghi chỉ liên quan đến hai loại máy bay được chỉ định. Sử dụng `WHERE T2.Aircraft IN ('Robinson R-22', 'Bell 206B3 JetRanger')`.
+- Gom nhóm & Điều kiện nhóm (Aggregation & HAVING):
+    - Để đảm bảo một sân bay có ""cả hai"" loại máy bay, chúng ta sẽ nhóm kết quả theo sân bay (`GROUP BY T1.Airport_ID`).
+    - Sau đó, chúng ta sẽ đếm số lượng máy bay *khác nhau* trong mỗi nhóm. Nếu một sân bay có cả hai loại, thì số đếm phải bằng 2.
+    - Sử dụng `HAVING COUNT(T2.Aircraft_ID) = 2` (hoặc `COUNT(DISTINCT T2.Aircraft_ID) = 2` để chắc chắn) để lọc ra các nhóm (sân bay) thỏa mãn điều kiện này.
+5. Hoàn thiện & kiểm tra
+- Đặt alias cho các bảng (T1, T2, T3) và prefix đầy đủ cho các cột để rõ ràng và tuân thủ ràng buộc.
+- Câu truy vấn cuối cùng sẽ kết hợp các bước JOIN, WHERE, GROUP BY, và HAVING.
+- `GROUP BY T1.Airport_ID` là đủ. SELECT `T1.Airport_Name`. SQLite sẽ hiểu rằng `Airport_Name` phụ thuộc vào `Airport_ID`.
+- Câu lệnh SQL tuân thủ dialect SQLite và các ràng buộc đã cho."
 145,aircraft,Tìm những phi công có số lần chiến thắng nhiều hơn mức trung bình số lần chiến thắng của các phi công đã từng thắng.,L8,NL-L4,"CTE computes wins per pilot, then compares each to the CTE-wide average (scalar subquery).",SELECT T2.Name FROM match AS T1 INNER JOIN pilot AS T2 ON T1.Winning_Pilot = T2.Pilot_Id GROUP BY T1.Winning_Pilot HAVING count(*)  >  (SELECT avg(T.sc) FROM (SELECT count(*) AS sc FROM match GROUP BY Winning_Pilot) AS T),"### 1. Mục tiêu & grain
 *   **Mục tiêu:** Liệt kê tên các phi công thỏa mãn một điều kiện so sánh.
 *   **Loại câu trả lời:** Liệt kê.
@@ -5382,30 +5688,61 @@ ORDER BY
    - Logic `NOT IN` với subquery hoạt động tốt trên SQLite.
    - Không có yêu cầu sắp xếp cụ thể, nhưng có thể thêm `ORDER BY` vào tên máy bay để kết quả dễ đọc hơn.
    - Không cần xử lý NULL vì `Winning_Aircraft` là khóa ngoại trỏ tới khóa chính `Aircraft_ID`, nên không thể là NULL."
-152,aircraft,"Với mỗi kiểu máy bay, có bao nhiêu sân bay (trong nhóm sân bay có thể tiếp nhận nó) có tổng lượng hành khách lớn hơn mức trung bình của chính nhóm đó?",L10,NL-L4,Correlated subquery computes the average passengers per aircraft’s airport set; outer query counts airports above that average.,"WITH AvgPassengersPerAircraft AS (
+152,aircraft,"Với mỗi kiểu máy bay, có bao nhiêu sân bay (trong nhóm sân bay có thể tiếp nhận nó) có tổng lượng hành khách lớn hơn mức trung bình của chính nhóm đó?",L10,NL-L4,Correlated subquery computes the average passengers per aircraft’s airport set; outer query counts airports above that average.,"WITH AircraftAirportStats AS (
   SELECT
-    T2.Aircraft_ID,
-    AVG(T3.Total_Passengers) AS avg_passengers
-  FROM airport_aircraft AS T2
+    T1.Aircraft,
+    T3.Total_Passengers,
+    AVG(T3.Total_Passengers) OVER (PARTITION BY T1.Aircraft_ID) AS AvgPassengersForGroup
+  FROM aircraft AS T1
+  JOIN airport_aircraft AS T2
+    ON T1.Aircraft_ID = T2.Aircraft_ID
   JOIN airport AS T3
     ON T2.Airport_ID = T3.Airport_ID
-  GROUP BY
-    T2.Aircraft_ID
 )
 SELECT
-  T1.Aircraft,
-  COUNT(T3.Airport_ID)
-FROM aircraft AS T1
-JOIN airport_aircraft AS T2
-  ON T1.Aircraft_ID = T2.Aircraft_ID
-JOIN airport AS T3
-  ON T2.Airport_ID = T3.Airport_ID
-JOIN AvgPassengersPerAircraft AS T4
-  ON T1.Aircraft_ID = T4.Aircraft_ID
+  T.Aircraft,
+  COUNT(*) AS NumberOfAirportsAboveAverage
+FROM AircraftAirportStats AS T
 WHERE
-  T3.Total_Passengers > T4.avg_passengers
+  T.Total_Passengers > T.AvgPassengersForGroup
 GROUP BY
-  T1.Aircraft;",
+  T.Aircraft;","1. Mục tiêu & grain
+- **Mục tiêu**: Thống kê. Cụ thể, với mỗi ""kiểu máy bay"", đếm xem có bao nhiêu ""sân bay"" đáp ứng một điều kiện. Điều kiện đó là: sân bay phải thuộc ""nhóm sân bay có thể tiếp nhận kiểu máy bay đó"" VÀ ""tổng lượng hành khách"" của sân bay đó phải lớn hơn ""mức trung bình của chính nhóm đó"".
+- **Grain**: Kết quả cuối cùng sẽ là một dòng cho mỗi kiểu máy bay. Các cột sẽ là tên kiểu máy bay và số lượng sân bay thỏa mãn điều kiện. Vậy: `1 dòng = 1 kiểu máy bay`.
+2. Gắn khái niệm vào schema
+- **""kiểu máy bay""**: Ánh xạ tới bảng `aircraft`, cụ thể là cột `aircraft.Aircraft`.
+- **""sân bay""**: Ánh xạ tới bảng `airport`, cụ thể là cột `airport.Airport_Name` hoặc `airport.Airport_ID`.
+- **""nhóm sân bay có thể tiếp nhận nó""**: Mối quan hệ này được định nghĩa trong bảng trung gian `airport_aircraft`. Để tìm các sân bay cho một `aircraft.Aircraft_ID` cụ thể, ta cần join `aircraft` -> `airport_aircraft` -> `airport`.
+- **""tổng lượng hành khách""**: Ánh xạ trực tiếp tới cột `airport.Total_Passengers`.
+- **""mức trung bình của chính nhóm đó""**: Đây là phần phức tạp nhất. For mỗi `aircraft.Aircraft_ID`, ta phải:
+    1. Xác định tập hợp các sân bay liên quan (qua `airport_aircraft`).
+    2. Tính giá trị `AVG(Total_Passengers)` chỉ trên tập hợp sân bay đó.
+3. Khung truy vấn
+- Để giải quyết bài toán ""so sánh giá trị của một hàng với giá trị tổng hợp của nhóm chứa nó"", có hai cách tiếp cận chính:
+    1. Dùng CTE: Một CTE để tính trung bình cho mỗi nhóm (`GROUP BY Aircraft_ID`), sau đó JOIN CTE này trở lại với dữ liệu chi tiết để so sánh.
+    2. Dùng Window Function: Sử dụng `AVG(...) OVER (PARTITION BY ...)` để tính giá trị trung bình của nhóm trên mỗi dòng dữ liệu chi tiết. Cách này thường gọn gàng và hiệu quả hơn.
+- Tôi sẽ chọn cách tiếp cận Window Function vì nó phù hợp và hiệu quả.
+- Sẽ cần một CTE để chuẩn bị dữ liệu đã join và tính toán window function.
+- `SELECT` cuối cùng sẽ lấy ra tên máy bay và `COUNT(*)` từ CTE, sau khi đã lọc.
+4. Module logic
+- **JOIN**:
+    - `aircraft` (T1) JOIN `airport_aircraft` (T2) ON `T1.Aircraft_ID = T2.Aircraft_ID`.
+    - `airport_aircraft` (T2) JOIN `airport` (T3) ON `T2.Airport_ID = T3.Airport_ID`.
+    - Điều này sẽ tạo ra một danh sách phẳng gồm mỗi cặp (máy bay, sân bay mà nó có thể đến).
+- **RANK (Window Function)**:
+    - Trong CTE, tôi sẽ tính `AVG(T3.Total_Passengers) OVER (PARTITION BY T1.Aircraft_ID)`.
+    - `PARTITION BY T1.Aircraft_ID` đảm bảo rằng giá trị trung bình được tính riêng cho mỗi nhóm sân bay của từng loại máy bay.
+- **AGG (Aggregation)**:
+    - Trong truy vấn cuối cùng, sau khi lọc các hàng mà `Total_Passengers` > `Avg_Passengers_For_Group` từ CTE, tôi sẽ dùng `COUNT(*)` hoặc `COUNT(DISTINCT airport_id)` để đếm số sân bay.
+    - `GROUP BY aircraft.Aircraft` để tổng hợp kết quả cho mỗi kiểu máy bay.
+- **DEDUP**: Không có nguy cơ nhân bản hàng trong ngữ cảnh này vì join `aircraft` -> `airport_aircraft` -> `airport` cho mỗi máy bay sẽ tạo ra một danh sách các sân bay riêng biệt. `COUNT(*)` sau khi `GROUP BY` là đủ.
+5. Hoàn thiện & kiểm tra
+- **CTE**: Đặt tên CTE là `AircraftAirportStats` để chứa dữ liệu đã join và cột tính toán trung bình nhóm.
+- **Filtering**: `WHERE` clause sẽ được áp dụng trên kết quả của CTE: `WHERE Total_Passengers > AvgPassengersForGroup`.
+- **Final SELECT**: `SELECT Aircraft, COUNT(*) FROM AircraftAirportStats ... GROUP BY Aircraft`.
+- **Aliases**: Sử dụng alias cho tất cả các bảng (T1, T2, T3) và prefix đầy đủ cho các cột để đảm bảo tính rõ ràng và chính xác.
+- **SQLite Compatibility**: Window functions đã được hỗ trợ trong SQLite từ phiên bản 3.25.0 (phát hành năm 2018), nên có thể sử dụng an toàn.
+- Truy vấn được xây dựng theo logic trên sẽ chính xác và hiệu quả."
 153,aircraft,Liệt kê những sân bay có tổng lượng hành khách lớn hơn mức trung bình của các sân bay cùng địa danh đầu tiên trong tên.,L10,NL-L4,Uses a correlated subquery over a derived city prefix to compare each airport against its peer-group average.,"WITH AirportLocationAvg AS (
   SELECT
     CASE
@@ -6441,162 +6778,58 @@ SELECT fault_description FROM Part_Faults;","1. Mục tiêu & grain
    - NULL handling: `EXCEPT` xử lý giá trị `NULL` một cách chính xác, coi chúng như các giá trị thông thường khi so sánh.
    - Tên cột `fault_description` tồn tại trong cả hai bảng `Fault_Log` và `Part_Faults`.
    - Cú pháp `EXCEPT` hoàn toàn tương thích với SQLite."
-180,assets_maintenance,Tìm các đơn vị cung ứng có số lượng tài sản cung ứng nhiều hơn mức trung bình của tất cả đơn vị cung ứng.,L8,NL-L4,Single CTE plus comparison to overall average (dynamic threshold); L8 via WITH.,"```json
-[
-  {""box_2d"": [465, 80, 528, 260], ""label"": ""other""},
-  {""box_2d"": [390, 84, 461, 265], ""label"": ""other""},
-  {""box_2d"": [278, 143, 317, 237], ""label"": ""other""},
-  {""box_2d"": [336, 175, 381, 252], ""label"": ""other""},
-  {""box_2d"": [321, 262, 360, 314], ""label"": ""other""},
-  {""box_2d"": [447, 303, 497, 396], ""label"": ""other""},
-  {""box_2d"": [419, 269, 442, 332], ""label"": ""other""},
-  {""box_2d"": [386, 397, 439, 469], ""label"": ""other""},
-  {""box_2d"": [380, 483, 419, 532], ""label"": ""other""},
-  {""box_2d"": [389, 551, 423, 620], ""label"": ""other""},
-  {""box_2d"": [460, 545, 520, 628], ""label"": ""other""},
-  {""box_2d"": [484, 462, 526, 522], ""label"": ""other""},
-  {""box_2d"": [414, 642, 452, 706], ""label"": ""other""},
-  {""box_2d"": [435, 715, 483, 786], ""label"": ""other""},
-  {""box_2d"": [458, 638, 520, 712], ""label"": ""other""},
-  {""box_2d"": [390, 810, 447, 882], ""label"": ""other""},
-  {""box_2d"": [458, 804, 520, 882], ""label"": ""other""},
-  {""box_2d"": [438, 889, 493, 971], ""label"": ""other""},
-  {""box_2d"": [376, 897, 432, 977], ""label"": ""other""},
-  {""box_2d"": [279, 735, 321, 792], ""label"": ""other""},
-  {""box_2d"": [342, 694, 383, 755], ""label"": ""other""},
-  {""box_2d"": [284, 638, 336, 694], ""label"": ""other""},
-  {""box_2d"": [344, 608, 375, 650], ""label"": ""other""},
-  {""box_2d"": [294, 554, 342, 605], ""label"": ""other""},
-  {""box_2d"": [347, 513, 379, 544], ""label"": ""other""},
-  {""box_2d"": [308, 480, 350, 522], ""label"": ""other""},
-  {""box_2d"": [287, 417, 331, 465], ""label"": ""other""},
-  {""box_2d"": [347, 401, 380, 439], ""label"": ""other""},
-  {""box_2d"": [343, 324, 381, 371], ""label"": ""other""},
-  {""box_2d"": [290, 321, 328, 362], ""label"": ""other""},
-  {""box_2d"": [232, 332, 281, 387], ""label"": ""other""},
-  {""box_2d"": [198, 252, 269, 314], ""label"": ""other""},
-  {""box_2d"": [231, 169, 276, 246], ""label"": ""other""},
-  {""box_2d"": [231, 78, 281, 151], ""label"": ""other""},
-  {""box_2d"": [198, 83, 226, 143], ""label"": ""other""},
-  {""box_2d"": [186, 160, 222, 219], ""label"": ""other""},
-  {""box_2d"": [160, 225, 192, 282], ""label"": ""other""},
-  {""box_2d"": [182, 312, 220, 364], ""label"": ""other""},
-  {""box_2d"": [168, 375, 214, 429], ""label"": ""other""},
-  {""box_2d"": [223, 404, 273, 459], ""label"": ""other""},
-  {""box_2d"": [222, 477, 269, 532], ""label"": ""other""},
-  {""box_2d"": [184, 460, 214, 502], ""label"": ""other""},
-  {""box_2d"": [178, 529, 216, 582], ""label"": ""other""},
-  {""box_2d"": [228, 554, 274, 611], ""label"": ""other""},
-  {""box_2d"": [231, 627, 274, 680], ""label"": ""other""},
-  {""box_2d"": [186, 616, 220, 666], ""label"": ""other""},
-  {""box_2d"": [186, 689, 228, 747], ""label"": ""other""},
-  {""box_2d"": [235, 715, 272, 770], ""label"": ""other""},
-  {""box_2d"": [240, 804, 281, 862], ""label"": ""other""},
-  {""box_2d"": [194, 783, 232, 836], ""label"": ""other""},
-  {""box_2d"": [197, 858, 237, 915], ""label"": ""other""},
-  {""box_2d"": [243, 882, 284, 940], ""label"": ""other""},
-  {""box_2d"": [253, 954, 290, 999], ""label"": ""other""},
-  {""box_2d"": [203, 940, 240, 989], ""label"": ""other""},
-  {""box_2d"": [163, 893, 197, 946], ""label"": ""other""},
-  {""box_2d"": [152, 824, 192, 878], ""label"": ""other""},
-  {""box_2d"": [153, 755, 187, 804], ""label"": ""other""},
-  {""box_2d"": [152, 682, 182, 730], ""label"": ""other""},
-  {""box_2d"": [152, 616, 178, 659], ""label"": ""other""},
-  {""box_2d"": [152, 558, 178, 597], ""label"": ""other""},
-  {""box_2d"": [152, 497, 175, 535], ""label"": ""other""},
-  {""box_2d"": [146, 437, 169, 473], ""label"": ""other""},
-  {""box_2d"": [138, 362, 163, 401], ""label"": ""other""},
-  {""box_2d"": [128, 293, 154, 335], ""label"": ""other""},
-  {""box_2d"": [128, 225, 153, 269], ""label"": ""other""},
-  {""box_2d"": [127, 157, 150, 198], ""label"": ""other""},
-  {""box_2d"": [125, 93, 147, 131], ""label"": ""other""},
-  {""box_2d"": [134, 30, 170, 84], ""label"": ""other""},
-  {""box_2d"": [178, 25, 218, 80], ""label"": ""other""},
-  {""box_2d"": [232, 25, 276, 75], ""label"": ""other""},
-  {""box_2d"": [287, 24, 336, 73], ""label"": ""other""},
-  {""box_2d"": [346, 22, 386, 68], ""label"": ""other""},
-  {""box_2d"": [396, 22, 442, 64], ""label"": ""other""},
-  {""box_2d"": [465, 20, 522, 65], ""label"": ""other""},
-  {""box_2d"": [538, 20, 584, 52], ""label"": ""other""},
-  {""box_2d"": [542, 169, 586, 210], ""label"": ""other""},
-  {""box_2d"": [538, 240, 582, 282], ""label"": ""other""},
-  {""box_2d"": [542, 313, 584, 354], ""label"": ""other""},
-  {""box_2d"": [538, 385, 583, 429], ""label"": ""other""},
-  {""box_2d"": [540, 460, 586, 502], ""label"": ""other""},
-  {""box_2d"": [540, 535, 584, 577], ""label"": ""other""},
-  {""box_2d"": [542, 608, 586, 650], ""label"": ""other""},
-  {""box_2d"": [538, 679, 586, 725], ""label"": ""other""},
-  {""box_2d"": [542, 758, 588, 801], ""label"": ""other""},
-  {""box_2d"": [542, 831, 588, 876], ""label"": ""other""},
-  {""box_2d"": [542, 908, 588, 955], ""label"": ""other""},
-  {""box_2d"": [546, 982, 592, 1000], ""label"": ""other""},
-  {""box_2d"": [664, 958, 706, 999], ""label"": ""other""},
-  {""box_2d"": [732, 936, 774, 982], ""label"": ""other""},
-  {""box_2d"": [732, 856, 772, 899], ""label"": ""other""},
-  {""box_2d"": [660, 882, 702, 929], ""label"": ""other""},
-  {""box_2d"": [658, 808, 700, 851], ""label"": ""other""},
-  {""box_2d"": [730, 782, 772, 824], ""label"": ""other""},
-  {""box_2d"": [728, 707, 770, 750], ""label"": ""other""},
-  {""box_2d"": [658, 735, 698, 778], ""label"": ""other""},
-  {""box_2d"": [658, 663, 698, 703], ""label"": ""other""},
-  {""box_2d"": [726, 635, 768, 676], ""label"": ""other""},
-  {""box_2d"": [726, 560, 768, 602], ""label"": ""other""},
-  {""box_2d"": [658, 587, 698, 627], ""label"": ""other""},
-  {""box_2d"": [656, 513, 697, 552], ""label"": ""other""},
-  {""box_2d"": [726, 487, 768, 527], ""label"": ""other""},
-  {""box_2d"": [725, 413, 766, 452], ""label"": ""other""},
-  {""box_2d"": [655, 439, 696, 477], ""label"": ""other""},
-  {""box_2d"": [654, 365, 696, 404], ""label"": ""other""},
-  {""box_2d"": [725, 339, 766, 377], ""label"": ""other""},
-  {""box_2d"": [723, 265, 765, 303], ""label"": ""other""},
-  {""box_2d"": [653, 292, 694, 329], ""label"": ""other""},
-  {""box_2d"": [654, 219, 694, 255], ""label"": ""other""},
-  {""box_2d"": [722, 192, 765, 229], ""label"": ""other""},
-  {""box_2d"": [722, 118, 765, 155], ""label"": ""other""},
-  {""box_2d"": [652, 146, 693, 183], ""label"": ""other""},
-  {""box_2d"": [650, 75, 690, 110], ""label"": ""other""},
-  {""box_2d"": [720, 45, 764, 82], ""label"": ""other""},
-  {""box_2d"": [788, 47, 826, 82], ""label"": ""other""},
-  {""box_2d"": [852, 47, 888, 80], ""label"": ""other""},
-  {""box_2d"": [852, 120, 890, 153], ""label"": ""other""},
-  {""box_2d"": [788, 120, 827, 155], ""label"": ""other""},
-  {""box_2d"": [788, 192, 827, 228], ""label"": ""other""},
-  {""box_2d"": [854, 192, 890, 226], ""label"": ""other""},
-  {""box_2d"": [854, 265, 892, 300], ""label"": ""other""},
-  {""box_2d"": [790, 265, 828, 302], ""label"": ""other""},
-  {""box_2d"": [790, 339, 830, 377], ""label"": ""other""},
-  {""box_2d"": [854, 339, 894, 375], ""label"": ""other""},
-  {""box_2d"": [856, 412, 895, 450], ""label"": ""other""},
-  {""box_2d"": [792, 413, 832, 452], ""label"": ""other""},
-  {""box_2d"": [794, 487, 833, 526], ""label"": ""other""},
-  {""box_2d"": [856, 487, 895, 524], ""label"": ""other""},
-  {""box_2d"": [858, 560, 898, 599], ""label"": ""other""},
-  {""box_2d"": [794, 560, 834, 600], ""label"": ""other""},
-  {""box_2d"": [796, 634, 836, 674], ""label"": ""other""},
-  {""box_2d"": [858, 632, 899, 672], ""label"": ""other""},
-  {""box_2d"": [860, 706, 900, 746], ""label"": ""other""},
-  {""box_2d"": [797, 707, 838, 747], ""label"": ""other""},
-  {""box_2d"": [798, 781, 840, 822], ""label"": ""other""},
-  {""box_2d"": [860, 779, 902, 820], ""label"": ""other""},
-  {""box_2d"": [862, 853, 904, 896], ""label"": ""other""},
-  {""box_2d"": [800, 855, 841, 897], ""label"": ""other""},
-  {""box_2d"": [802, 930, 842, 975], ""label"": ""other""},
-  {""box_2d"": [862, 928, 905, 973], ""label"": ""other""},
-  {""box_2d"": [932, 908, 976, 955], ""label"": ""other""},
-  {""box_2d"": [928, 835, 972, 878], ""label"": ""other""},
-  {""box_2d"": [926, 760, 970, 804], ""label"": ""other""},
-  {""box_2d"": [925, 686, 968, 729], ""label"": ""other""},
-  {""box_2d"": [922, 612, 966, 655], ""label"": ""other""},
-  {""box_2d"": [920, 538, 965, 580], ""label"": ""other""},
-  {""box_2d"": [920, 464, 964, 506], ""label"": ""other""},
-  {""box_2d"": [918, 389, 962, 432], ""label"": ""other""},
-  {""box_2d"": [918, 316, 962, 357], ""label"": ""other""},
-  {""box_2d"": [916, 243, 960, 283], ""label"": ""other""},
-  {""box_2d"": [915, 170, 958, 210], ""label"": ""other""},
-  {""box_2d"": [912, 97, 956, 136], ""label"": ""other""},
-  {""box_2d"": [912, 23, 954, 62], ""label"": ""other""}
-]
-```",
+180,assets_maintenance,Tìm các đơn vị cung ứng có số lượng tài sản cung ứng nhiều hơn mức trung bình của tất cả đơn vị cung ứng.,L8,NL-L4,Single CTE plus comparison to overall average (dynamic threshold); L8 via WITH.,"WITH SupplierAssetCounts AS (
+  SELECT
+    T1.supplier_company_id,
+    COUNT(T1.asset_id) AS asset_count
+  FROM Assets AS T1
+  WHERE
+    T1.supplier_company_id IS NOT NULL
+  GROUP BY
+    T1.supplier_company_id
+)
+SELECT
+  T2.company_name
+FROM SupplierAssetCounts AS T1
+JOIN Third_Party_Companies AS T2
+  ON T1.supplier_company_id = T2.company_id
+WHERE
+  T1.asset_count > (
+    SELECT
+      AVG(asset_count)
+    FROM SupplierAssetCounts
+  );","1. Mục tiêu & grain
+   - **Mục tiêu:** Liệt kê tên các công ty cung ứng đã cung cấp số lượng tài sản nhiều hơn mức trung bình.
+   - **Loại câu trả lời:** Liệt kê.
+   - **Grain:** 1 dòng = 1 công ty cung ứng.
+2. Gắn khái niệm vào schema
+   - ""Đơn vị cung ứng"": Bảng `Third_Party_Companies`, cụ thể là cột `company_name`. Khóa để liên kết là `company_id`.
+   - ""Tài sản"": Bảng `Assets`.
+   - ""Số lượng tài sản cung ứng"": Đếm số lượng bản ghi trong bảng `Assets` cho mỗi `supplier_company_id`. Sử dụng `COUNT(asset_id)`.
+   - ""Mức trung bình của tất cả đơn vị cung ứng"": Tính trung bình của số lượng tài sản cung ứng trên tất cả các nhà cung cấp. Tức là `AVG(COUNT(asset_id))`.
+3. Khung truy vấn
+   - Cần tính toán hai cấp: (1) đếm số tài sản cho mỗi nhà cung cấp, và (2) tính trung bình của các số đếm đó để so sánh. Dùng CTE (Common Table Expression) là cách tiếp cận sạch sẽ.
+   - **CTE `SupplierAssetCounts`:** Sẽ tính số lượng tài sản cho mỗi `supplier_company_id`.
+     - `SELECT supplier_company_id, COUNT(asset_id) AS num_assets`
+     - `FROM Assets`
+     - `GROUP BY supplier_company_id`
+   - **Truy vấn chính:**
+     - `SELECT` tên công ty (`company_name`) từ bảng `Third_Party_Companies`.
+     - `JOIN` với CTE `SupplierAssetCounts` bằng `company_id`.
+     - `WHERE` số tài sản của công ty đó (`num_assets`) lớn hơn giá trị trung bình.
+     - Giá trị trung bình sẽ được tính bằng một subquery: `(SELECT AVG(num_assets) FROM SupplierAssetCounts)`.
+4. Module logic
+   - **AGG:**
+     - Trong CTE: `COUNT(asset_id)` và `GROUP BY supplier_company_id`.
+     - Trong subquery của mệnh đề `WHERE` của truy vấn chính: `AVG(num_assets)`.
+   - **JOIN:**
+     - `JOIN Third_Party_Companies` với CTE `SupplierAssetCounts` trên `Third_Party_Companies.company_id = SupplierAssetCounts.supplier_company_id`.
+5. Hoàn thiện & kiểm tra
+   - Không có yêu cầu sắp xếp cụ thể, vì vậy không cần `ORDER BY`.
+   - Cột `supplier_company_id` trong `Assets` có thể chứa NULL. `GROUP BY` sẽ tự động xử lý, tạo ra một nhóm cho các giá trị NULL (nếu có) mà chúng ta có thể bỏ qua. Phép đếm vẫn chính xác.
+   - Các tên cột (`supplier_company_id`, `asset_id`, `company_name`, `company_id`) đều tồn tại trong schema.
+   - Cú pháp sử dụng (CTE, AVG, subquery) tương thích với SQLite.
+   - Logic hoàn chỉnh: Tạo một bảng tạm thời (CTE) chứa số lượng tài sản cho mỗi nhà cung cấp, sau đó lọc bảng đó để tìm những nhà cung cấp có số lượng lớn hơn mức trung bình được tính từ chính bảng tạm đó, cuối cùng lấy tên công ty tương ứng."
 181,assets_maintenance,"Với mỗi tài sản, hãy tính số ngày từ lúc được mua về đến lúc bị thanh lý (nếu đã thanh lý).",L8,NL-L2,CTE filters disposed assets then computes day difference using julianday; L8 single CTE and REAL cast.,"SELECT
   T1.asset_id,
   T1.asset_details,
@@ -6837,31 +7070,26 @@ WHERE
 - ORDER BY: Sắp xếp kết quả theo họ và tên (`last_name`, `first_name`) để dễ đọc hơn.
 - NULL handling: Điều kiện `IS NULL` là trọng tâm của logic, đã được xử lý đúng.
 - Tên cột và bảng: Tất cả đều tồn tại trong schema. Dùng alias `T1` cho `Maintenance_Engineers` và `T2` cho `Engineer_Visits`, đồng thời prefix đầy đủ cho các cột để đảm bảo tính rõ ràng. Truy vấn tương thích với SQLite."
-188,assets_maintenance,Tìm các lần ghi nhận sự cố chưa từng được gắn bất kỳ lỗi linh kiện nào.,L9,NL-L3,NOT EXISTS ensures no related rows in the bridge table; L9 anti-join with negation phrasing.,"```json
-[
-  {""box_2d"": [183, 102, 281, 411], ""label"": ""table""},
-  {""box_2d"": [308, 101, 353, 411], ""label"": ""table""},
-  {""box_2d"": [368, 102, 413, 411], ""label"": ""table""},
-  {""box_2d"": [181, 452, 280, 762], ""label"": ""table""},
-  {""box_2d"": [296, 452, 412, 761], ""label"":o"": ""table""},
-  {""box_2d"": [182, 792, 280, 977], ""label"": ""table""},
-  {""box_2d"": [297, 792, 412, 976], ""label"": ""table""},
-  {""box_2d"": [431, 102, 529, 410], ""label"": ""table""},
-  {""box_2d"": [545, 103, 626, 412], ""label"": ""table""},
-  {""box_2d"": [643, 103, 688, 411], ""label"": ""table""},
-  {""box_2d"": [430, 452, 545, 761], ""label"": ""table""},
-  {""box_2d"": [562, 452, 672, 762], ""label"": ""table""},
-  {""box_2d"": [430, 793, 544, 977], ""label"": ""table""},
-  {""box_2d"": [561, 793, 671, 977], ""label"": ""table""},
-  {""box_2d"": [704, 104, 804, 411], ""label"": ""table""},
-  {""box_2d"": [819, 103, 899, 412], ""label"": ""table""},
-  {""box_2d"": [688, 452, 804, 762], ""label"": ""table""},
-  {""box_2d"": [689, 794, 804, 977], ""label"": ""table""},
-  {""box_2d"": [820, 453, 934, 761], ""label"": ""table""},
-  {""box_2d"": [820, 792, 934, 977], ""label"": ""table""},
-  {""box_2d"": [917, 103, 979, 412], ""label"": ""table""}
-]
-```",
+188,assets_maintenance,Tìm các lần ghi nhận sự cố chưa từng được gắn bất kỳ lỗi linh kiện nào.,L9,NL-L3,NOT EXISTS ensures no related rows in the bridge table; L9 anti-join with negation phrasing.,SELECT * FROM Fault_Log AS T1 WHERE T1.fault_log_entry_id NOT IN (SELECT fault_log_entry_id FROM Fault_Log_Parts),"1.  **Mục tiêu & grain:**
+    *   **Mục tiêu:** Liệt kê tất cả các bản ghi trong bảng `Fault_Log` (lần ghi nhận sự cố) mà không có bản ghi tương ứng trong bảng `Fault_Log_Parts` (lỗi linh kiện).
+    *   **Loại câu trả lời:** Liệt kê.
+    *   **Grain:** Mỗi dòng kết quả sẽ là một lần ghi nhận sự cố (`fault_log_entry`).
+2.  **Gắn khái niệm vào schema:**
+    *   ""Lần ghi nhận sự cố"" tương ứng với một dòng trong bảng `Fault_Log`, được xác định bởi khóa chính `fault_log_entry_id`.
+    *   ""Lỗi linh kiện"" được gắn với một lần ghi nhận sự cố thông qua bảng `Fault_Log_Parts`. Bảng này liên kết `fault_log_entry_id` từ `Fault_Log` với `part_fault_id` từ `Part_Faults`.
+    *   ""Chưa từng được gắn bất kỳ lỗi linh kiện nào"" có nghĩa là `fault_log_entry_id` của một lần ghi nhận sự cố tồn tại trong `Fault_Log` nhưng không tồn tại trong `Fault_Log_Parts`.
+3.  **Khung truy vấn:**
+    *   **Anchor table:** Bảng `Fault_Log` là bảng chính vì chúng ta đang truy vấn về ""lần ghi nhận sự cố"".
+    *   **CTE:** Không cần thiết cho logic này.
+    *   **SELECT:** Tôi sẽ chọn tất cả các cột từ bảng `Fault_Log` (`T1.*`) để cung cấp thông tin đầy đủ về các lần ghi nhận sự cố thỏa mãn điều kiện.
+4.  **Module logic:**
+    *   **SET/Subquery:** Đây là một bài toán tìm kiếm sự khác biệt (difference). Tôi có thể sử dụng `LEFT JOIN ... IS NULL`, `NOT IN`, hoặc `NOT EXISTS`.
+        *   Phương pháp `NOT IN` là trực quan và dễ hiểu nhất cho trường hợp này. Tôi sẽ chọn các bản ghi từ `Fault_Log` mà `fault_log_entry_id` của chúng không có trong danh sách tất cả các `fault_log_entry_id` từ bảng `Fault_Log_Parts`.
+        *   Cụ thể, tôi sẽ tạo một subquery để lấy tất cả `fault_log_entry_id` từ `Fault_Log_Parts`. Sau đó, ở truy vấn chính, tôi sẽ lọc bảng `Fault_Log` bằng điều kiện `WHERE fault_log_entry_id NOT IN (...)`.
+5.  **Hoàn thiện & kiểm tra:**
+    *   **ORDER BY / LIMIT:** Không có yêu cầu sắp xếp hay giới hạn số lượng kết quả.
+    *   **Alias:** Tôi sẽ dùng alias `T1` cho `Fault_Log` và `T2` cho `Fault_Log_Parts` trong subquery để tuân thủ quy tắc và giữ cho truy vấn rõ ràng.
+    *   **Kiểm tra:** Câu truy vấn sẽ có dạng: `SELECT T1.* FROM Fault_Log AS T1 WHERE T1.fault_log_entry_id NOT IN (SELECT T2.fault_log_entry_id FROM Fault_Log_Parts AS T2)`. Logic này chính xác giải quyết yêu cầu của bài toán."
 189,assets_maintenance,Liệt kê các lỗi linh kiện chưa từng xuất hiện trong nhật ký sự cố nào.,L9,NL-L3,Anti-join via LEFT JOIN NULL filter to find unused part faults; L9.,"SELECT
   t1.fault_short_name,
   t1.fault_description
@@ -7964,16 +8192,39 @@ ORDER BY
 - **Alias và prefix**: Đã sử dụng alias cho tất cả các bảng và prefix đầy đủ cho mọi cột được chọn và trong điều kiện JOIN.
 - **SQLite compatibility**: Các hàm và cú pháp đều tương thích với SQLite."
 213,assets_maintenance,Liệt kê các lượt đến xử lý kèm tên người liên hệ và tên người ghi nhận sự cố của lần đó.,L5,NL-L2,Uses 4 tables and two Staff roles (contact vs recorder) via joins; L5 multi-join.,"SELECT
-  T1.engineer_visit_id,
-  T3.staff_name AS 'Tên người liên hệ',
-  T4.staff_name AS 'Tên người ghi nhận sự cố'
+  T1.*,
+  T3.staff_name AS contact_person_name,
+  T4.staff_name AS fault_recorder_name
 FROM Engineer_Visits AS T1
-JOIN Fault_Log AS T2
+INNER JOIN Fault_Log AS T2
   ON T1.fault_log_entry_id = T2.fault_log_entry_id
-JOIN Staff AS T3
+INNER JOIN Staff AS T3
   ON T1.contact_staff_id = T3.staff_id
-JOIN Staff AS T4
-  ON T2.recorded_by_staff_id = T4.staff_id;",
+INNER JOIN Staff AS T4
+  ON T2.recorded_by_staff_id = T4.staff_id;","1. Mục tiêu & grain
+   - Mục tiêu: Liệt kê thông tin chi tiết về các lượt kỹ sư đến xử lý sự cố.
+   - Loại câu trả lời: Liệt kê.
+   - Grain (Đơn vị của mỗi dòng): 1 dòng = 1 lượt đến xử lý sự cố (`Engineer_Visits`).
+2. Gắn khái niệm vào schema
+   - ""các lượt đến xử lý"": Bảng `Engineer_Visits`.
+   - ""tên người liên hệ"": `Engineer_Visits` có cột `contact_staff_id` nối đến `Staff.staff_id`. Tên người liên hệ nằm ở cột `Staff.staff_name`.
+   - ""tên người ghi nhận sự cố"": Một lượt xử lý (`Engineer_Visits`) liên quan đến một sự cố (`Fault_Log`) qua khóa `fault_log_entry_id`. Bảng `Fault_Log` có cột `recorded_by_staff_id` nối đến `Staff.staff_id`. Tên người ghi nhận nằm ở cột `Staff.staff_name`.
+   - Chú ý: Cần join bảng `Staff` hai lần với hai mục đích khác nhau, do đó phải dùng alias khác nhau cho bảng `Staff`.
+3. Khung truy vấn
+   - Anchor table: `Engineer_Visits` vì đây là đối tượng chính cần liệt kê.
+   - Các trường sẽ SELECT: Toàn bộ thông tin từ `Engineer_Visits` (`T1.*`), tên người liên hệ (`T3.staff_name`), và tên người ghi nhận sự cố (`T4.staff_name`).
+   - CTE: Không cần thiết, có thể giải quyết bằng các phép JOIN trực tiếp.
+4. Module logic
+   - JOIN:
+     1. Bắt đầu từ `Engineer_Visits` (alias `T1`).
+     2. `INNER JOIN` với `Fault_Log` (alias `T2`) qua `T1.fault_log_entry_id = T2.fault_log_entry_id` để tìm ra sự cố tương ứng.
+     3. `INNER JOIN` với `Staff` (alias `T3`) qua `T1.contact_staff_id = T3.staff_id` để lấy tên người liên hệ.
+     4. `INNER JOIN` với `Staff` một lần nữa (alias `T4`) qua `T2.recorded_by_staff_id = T4.staff_id` để lấy tên người ghi nhận sự cố.
+5. Hoàn thiện & kiểm tra
+   - ORDER BY: Câu hỏi không yêu cầu thứ tự cụ thể, nên không cần `ORDER BY`.
+   - NULL handling: Sử dụng `INNER JOIN` là hợp lý, giả định rằng mỗi lượt xử lý đều phải có người liên hệ và người ghi nhận sự cố tồn tại trong hệ thống.
+   - Alias: Đã đặt alias cho tất cả các bảng và prefix đầy đủ cho các cột được tham chiếu trong các mệnh đề `SELECT` và `ON`, tuân thủ ràng buộc.
+   - Dialect: Câu lệnh sử dụng `SELECT`, `FROM`, `INNER JOIN ON`, là cú pháp chuẩn và hoàn toàn tương thích với SQLite."
 214,assets_maintenance,Tìm các tài sản có ít nhất một linh kiện tính phí và cho biết tổng mức phí của các linh kiện đó trên mỗi tài sản.,L6,NL-L2,Conditional SUM with REAL casting for amounts and HAVING to keep assets with chargeable parts; L6 conditional aggregation.,"SELECT
   T1.asset_id,
   T1.asset_details,
@@ -8246,74 +8497,50 @@ ORDER BY
    - **ORDER BY**: Sắp xếp kết quả cuối cùng theo tên công ty cho dễ theo dõi.
    - **Alias**: Sử dụng alias cho tất cả các bảng (`a1`, `a2`, `ap`, `rp`, `tpc`) và các cột được tính toán. Tất cả các cột được tham chiếu đều có tiền tố alias đầy đủ.
    - **SQLite**: Các hàm và cú pháp được sử dụng (CTE, self-join, window function `RANK()`) đều tương thích với SQLite."
-220,assets_maintenance,Xếp hạng các tài sản theo số lượt đến xử lý liên quan đến tài sản đó (đếm qua các lần ghi nhận sự cố).,L12,NL-L4,Window RANK over aggregated visit counts; L12 ranking with comparative intent.,"```json
-[
-  {""box_id"": ""assets_maintenance_Asset_Parts"", ""table_name"": ""Asset_Parts"", ""column_name"": ""asset_id"", ""description"": ""Foreign key to Assets.asset_id""},
-  {""box_id"": ""assets_maintenance_Asset_Parts"", ""table_name"": ""Asset_Parts"", ""column_name"": ""part_id"", ""description"": ""Foreign key to Parts.part_id""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""maintenance_contract_id"", ""description"": ""Foreign key to Maintenance_Contracts.maintenance_contract_id""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""supplier_company_id"", ""description"": ""Foreign key to Third_Party_Companies.company_id""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_details"", ""description"": ""Asset details""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_make"", ""description"": ""Asset make""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_model"", ""description"": ""Asset model""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_acquired_date"", ""description"": ""Date asset was acquired""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""asset_disposed_date"", ""description"": ""Date asset was disposed""},
-  {""box_id"": ""assets_maintenance_Assets"", ""table_name"": ""Assets"", ""column_name"": ""other_asset_details"", ""description"": ""Other asset details""},
-  {""box_id"": ""assets_maintenance_Engineer_Skills"", ""table_name"": ""Engineer_Skills"", ""column_name"": ""engineer_id"", ""description"": ""Foreign key to Maintenance_Engineers.engineer_id""},
-  {""box_id"": ""assets_maintenance_Engineer_Skills"", ""table_name"": ""Engineer_Skills"", ""column_name"": ""skill_id"", ""description"": ""Foreign key to Skills.skill_id""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""engineer_visit_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""contact_staff_id"", ""description"": ""Foreign key to Staff.staff_id""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""engineer_id"", ""description"": ""Foreign key to Maintenance_Engineers.engineer_id""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""fault_log_entry_id"", ""description"": ""Foreign key to Fault_Log.fault_log_entry_id""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""fault_status"", ""description"": ""Fault status""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""visit_start_datetime"", ""description"": ""Visit start date and time""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""visit_end_datetime"", ""description"": ""Visit end date and time""},
-  {""box_id"": ""assets_maintenance_Engineer_Visits"", ""table_name"": ""Engineer_Visits"", ""column_name"": ""other_visit_details"", ""description"": ""Other visit details""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""fault_log_entry_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""asset_id"", ""description"": ""Foreign key to Assets.asset_id""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""recorded_by_staff_id"", ""description"": ""Foreign key to Staff.staff_id""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""fault_log_entry_datetime"", ""description"": ""Date and time fault log entry was made""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""fault_description"", ""description"": ""Fault description""},
-  {""box_id"": ""assets_maintenance_Fault_Log"", ""table_name"": ""Fault_Log"", ""column_name"": ""other_fault_details"", ""description"": ""Other fault details""},
-  {""box_id"": ""assets_maintenance_Fault_Log_Parts"", ""table_name"": ""Fault_Log_Parts"", ""column_name"": ""fault_log_entry_id"", ""description"": ""Foreign key to Fault_Log.fault_log_entry_id""},
-  {""box_id"": ""assets_maintenance_Fault_Log_Parts"", ""table_name"": ""Fault_Log_Parts"", ""column_name"": ""part_fault_id"", ""description"": ""Foreign key to Part_Faults.part_fault_id""},
-  {""box_id"": ""assets_maintenance_Fault_Log_Parts"", ""table_name"": ""Fault_Log_Parts"", ""column_name"": ""fault_status"", ""description"": ""Fault status""},
-  {""box_id"": ""assets_maintenance_Maintenance_Contracts"", ""table_name"": ""Maintenance_Contracts"", ""column_name"": ""maintenance_contract_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Maintenance_Contracts"", ""table_name"": ""Maintenance_Contracts"", ""column_name"": ""maintenance_contract_company_id"", ""description"": ""Foreign key to Third_Party_Companies.company_id""},
-  {""box_id"": ""assets_maintenance_Maintenance_Contracts"", ""table_name"": ""Maintenance_Contracts"", ""column_name"": ""contract_start_date"", ""description"": ""Contract start date""},
-  {""box_id"": ""assets_maintenance_Maintenance_Contracts"", ""table_name"": ""Maintenance_Contracts"", ""column_name"": ""contract_end_date"", ""description"": ""Contract end date""},
-  {""box_id"": ""assets_maintenance_Maintenance_Contracts"", ""table_name"": ""Maintenance_Contracts"", ""column_name"": ""other_contract_details"", ""description"": ""Other contract details""},
-  {""box_id"": ""assets_maintenance_Maintenance_Engineers"", ""table_name"": ""Maintenance_Engineers"", ""column_name"": ""engineer_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Maintenance_Engineers"", ""table_name"": ""Maintenance_Engineers"", ""column_name"": ""company_id"", ""description"": ""Foreign key to Third_Party_Companies.company_id""},
-  {""box_id"": ""assets_maintenance_Maintenance_Engineers"", ""table_name"": ""Maintenance_Engineers"", ""column_name"": ""first_name"", ""description"": ""First name""},
-  {""box_id"": ""assets_maintenance_Maintenance_Engineers"", ""table_name"": ""Maintenance_Engineers"", ""column_name"": ""last_name"", ""description"": ""Last name""},
-  {""box_id"": ""assets_maintenance_Maintenance_Engineers"", ""table_name"": ""Maintenance_Engineers"", ""column_name"": ""other_details"", ""description"": ""Other details""},
-  {""box_id"": ""assets_maintenance_Part_Faults"", ""table_name"": ""Part_Faults"", ""column_name"": ""part_fault_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Part_Faults"", ""table_name"": ""Part_Faults"", ""column_name"": ""part_id"", ""description"": ""Foreign key to Parts.part_id""},
-  {""box_id"": ""assets_maintenance_Part_Faults"", ""table_name"": ""Part_Faults"", ""column_name"": ""fault_short_name"", ""description"": ""Fault short name""},
-  {""box_id"": ""assets_maintenance_Part_Faults"", ""table_name"": ""Part_Faults"", ""column_name"": ""fault_description"", ""description"": ""Fault description""},
-  {""box_id"": ""assets_maintenance_Part_Faults"", ""table_name"": ""Part_Faults"", ""column_name"": ""other_fault_details"", ""description"": ""Other fault details""},
-  {""box_id"": ""assets_maintenance_Parts"", ""table_name"": ""Parts"", ""column_name"": ""part_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Parts"", ""table_name"": ""Parts"", ""column_name"": ""part_name"", ""description"": ""Part name""},
-  {""box_id"": ""assets_maintenance_Parts"", ""table_name"": ""Parts"", ""column_name"": ""chargeable_yn"", ""description"": ""Chargeable (yes/no)""},
-  {""box_id"": ""assets_maintenance_Parts"", ""table_name"": ""Parts"", ""column_name"": ""chargeable_amount"", ""description"": ""Chargeable amount""},
-  {""box_id"": ""assets_maintenance_Parts"", ""table_name"": ""Parts"", ""column_name"": ""other_part_details"", ""description"": ""Other part details""},
-  {""box_id"": ""assets_maintenance_Skills"", ""table_name"": ""Skills"", ""column_name"": ""skill_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Skills"", ""table_name"": ""Skills"", ""column_name"": ""skill_code"", ""description"": ""Skill code""},
-  {""box_id"": ""assets_maintenance_Skills"", ""table_name"": ""Skills"", ""column_name"": ""skill_description"", ""description"": ""Skill description""},
-  {""box_id"": ""assets_maintenance_Skills_Required_To_Fix"", ""table_name"": ""Skills_Required_To_Fix"", ""column_name"": ""part_fault_id"", ""description"": ""Foreign key to Part_Faults.part_fault_id""},
-  {""box_id"": ""assets_maintenance_Skills_Required_To_Fix"", ""table_name"": ""Skills_Required_To_Fix"", ""column_name"": ""skill_id"", ""description"": ""Foreign key to Skills.skill_id""},
-  {""box_id"": ""assets_maintenance_Staff"", ""table_name"": ""Staff"", ""column_name"": ""staff_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Staff"", ""table_name"": ""Staff"", ""column_name"": ""staff_name"", ""description"": ""Staff name""},
-  {""box_id"": ""assets_maintenance_Staff"", ""table_name"": ""Staff"", ""column_name"": ""gender"", ""description"": ""Gender (1 for male, 0 for female)""},
-  {""box_id"": ""assets_maintenance_Staff"", ""table_name"": ""Staff"", ""column_name"": ""other_staff_details"", ""description"": ""Other staff details""},
-  {""box_id"": ""assets_maintenance_Third_Party_Companies"", ""table_name"": ""Third_Party_Companies"", ""column_name"": ""company_id"", ""description"": ""Primary key""},
-  {""box_id"": ""assets_maintenance_Third_Party_Companies"", ""table_name"": ""Third_Party_Companies"", ""column_name"": ""company_type"", ""description"": ""Company type""},
-  {""box_id"": ""assets_maintenance_Third_Party_Companies"", ""table_name"": ""Third_Party_Companies"", ""column_name"": ""company_name"", ""description"": ""Company name""},
-  {""box_id"": ""assets_maintenance_Third_Party_Companies"", ""table_name"": ""Third_Party_Companies"", ""column_name"": ""company_address"", ""description"": ""Company address""},
-  {""box_id"": ""assets_maintenance_Third_Party_Companies"", ""table_name"": ""Third_Party_Companies"", ""column_name"": ""other_company_details"", ""description"": ""Other company details""}
-]
-```",
+220,assets_maintenance,Xếp hạng các tài sản theo số lượt đến xử lý liên quan đến tài sản đó (đếm qua các lần ghi nhận sự cố).,L12,NL-L4,Window RANK over aggregated visit counts; L12 ranking with comparative intent.,"SELECT
+  T1.asset_id,
+  T1.asset_details,
+  COUNT(T3.engineer_visit_id) AS so_luot_den_xu_ly
+FROM Assets AS T1
+LEFT JOIN Fault_Log AS T2
+  ON T1.asset_id = T2.asset_id
+LEFT JOIN Engineer_Visits AS T3
+  ON T2.fault_log_entry_id = T3.fault_log_entry_id
+GROUP BY
+  T1.asset_id,
+  T1.asset_details
+ORDER BY
+  so_luot_den_xu_ly DESC;","1. Mục tiêu & grain
+   - Mục tiêu: Liệt kê và xếp hạng tất cả các tài sản (assets) dựa trên số lượng lượt kỹ sư đến xử lý sự cố liên quan đến tài sản đó. Đây là một câu hỏi loại top-k / xếp hạng.
+   - Grain (Độ chi tiết): Mỗi dòng trong kết quả cuối cùng sẽ đại diện cho một tài sản duy nhất.
+   - Kết quả cần trả về: ID tài sản, chi tiết tài sản, và tổng số lượt đến xử lý.
+2. Gắn khái niệm vào schema
+   - ""tài sản"": Ánh xạ tới bảng `Assets`. Các cột cần thiết là `asset_id` và `asset_details`.
+   - ""lượt đến xử lý"": Ánh xạ tới bảng `Engineer_Visits`. Chúng ta cần đếm số lượng bản ghi trong bảng này.
+   - ""liên quan đến tài sản đó (đếm qua các lần ghi nhận sự cố)"": Đây là logic kết nối. Câu hỏi chỉ rõ mối liên hệ là từ Tài sản -> Ghi nhận sự cố -> Lượt đến xử lý.
+     - `Assets.asset_id` liên kết với `Fault_Log.asset_id`.
+     - `Fault_Log.fault_log_entry_id` liên kết với `Engineer_Visits.fault_log_entry_id`.
+3. Khung truy vấn
+   - Bảng neo (Anchor table): `Assets`, vì chúng ta muốn xếp hạng tất cả các tài sản, kể cả những tài sản không có lượt đến xử lý nào.
+   - CTE: Không cần thiết vì chuỗi JOIN khá đơn giản.
+   - Các trường sẽ SELECT: `Assets.asset_id`, `Assets.asset_details`, và một cột đếm tổng hợp (ví dụ: `COUNT(Engineer_Visits.engineer_visit_id)`).
+4. Module logic
+   - JOIN:
+     - Bắt đầu từ `Assets` (T1).
+     - `LEFT JOIN` với `Fault_Log` (T2) qua `T1.asset_id = T2.asset_id`. Dùng `LEFT JOIN` để đảm bảo tất cả tài sản được giữ lại, ngay cả khi chúng chưa từng có sự cố nào được ghi nhận.
+     - `LEFT JOIN` tiếp với `Engineer_Visits` (T3) qua `T2.fault_log_entry_id = T3.fault_log_entry_id`. Tiếp tục dùng `LEFT JOIN` để giữ lại các tài sản có sự cố nhưng chưa có lượt kỹ sư nào đến xử lý.
+   - AGG (Tổng hợp):
+     - Hàm: `COUNT(T3.engineer_visit_id)`. Dùng `COUNT` trên một cột cụ thể của bảng `Engineer_Visits` (thay vì `COUNT(*)`) để nó trả về 0 cho những tài sản không có lượt đến nào (do `LEFT JOIN` tạo ra giá trị NULL).
+     - `GROUP BY`: `T1.asset_id`, `T1.asset_details` để nhóm tất cả các lượt đến theo từng tài sản.
+   - RANK:
+     - Yêu cầu là ""Xếp hạng"", vì vậy cần có `ORDER BY`.
+     - Sắp xếp kết quả theo cột đếm tổng hợp theo thứ tự giảm dần (`DESC`) để tài sản có nhiều lượt đến nhất lên đầu.
+5. Hoàn thiện & kiểm tra
+   - `ORDER BY`: Đã thêm `ORDER BY COUNT(T3.engineer_visit_id) DESC`.
+   - NULL handling: Việc sử dụng `LEFT JOIN` và `COUNT(cột)` đã xử lý đúng trường hợp tài sản không có lượt đến (trả về 0).
+   - COUNT(*) vs COUNT(col): Đã chọn `COUNT(T3.engineer_visit_id)` là chính xác.
+   - Alias và prefix: Tất cả các bảng sẽ được đặt alias (T1, T2, T3) và các cột sẽ được tiền tố đầy đủ để rõ ràng.
+   - SQLite compatible: Truy vấn sử dụng các hàm và cú pháp chuẩn của SQLite (`SELECT`, `FROM`, `LEFT JOIN`, `GROUP BY`, `ORDER BY`)."
 221,assets_maintenance,Tính số lượt đến xử lý theo từng năm dựa trên thời điểm bắt đầu.,L13,NL-L1,"Uses strftime('%Y', ...) to bucket by year; L13 time-series using SQLite date functions.","SELECT
   STRFTIME('%Y', T1.visit_start_datetime) AS visit_year,
   COUNT(T1.engineer_visit_id) AS number_of_visits
@@ -8321,7 +8548,33 @@ FROM Engineer_Visits AS T1
 GROUP BY
   visit_year
 ORDER BY
-  visit_year;",
+  visit_year;","1. Mục tiêu & grain
+   - Mục tiêu: Thống kê số lượng lượt kỹ sư đến xử lý sự cố (`Engineer_Visits`) và nhóm chúng theo từng năm.
+   - Loại câu trả lời: Thống kê (aggregation).
+   - Grain: Mỗi dòng kết quả sẽ đại diện cho một năm, cùng với tổng số lượt đến xử lý trong năm đó. (1 dòng = 1 năm).
+2. Gắn khái niệm vào schema
+   - ""lượt đến xử lý"": Tương ứng với một bản ghi (một dòng) trong bảng `Engineer_Visits`.
+   - ""số lượt"": Sẽ được tính bằng hàm `COUNT(*)` trên bảng `Engineer_Visits`.
+   - ""thời điểm bắt đầu"": Khớp chính xác với cột `visit_start_datetime` trong bảng `Engineer_Visits`.
+   - ""theo từng năm"": Cần trích xuất phần năm từ cột `visit_start_datetime`.
+3. Khung truy vấn
+   - Bảng chính (Anchor table): `Engineer_Visits` là bảng duy nhất cần thiết vì nó chứa cả thông tin về lượt đến và thời gian bắt đầu.
+   - CTE: Không cần thiết vì truy vấn khá đơn giản.
+   - Các trường sẽ SELECT:
+     1. Năm được trích xuất từ `visit_start_datetime`.
+     2. Số lượng lượt đến (sử dụng `COUNT(*)`).
+4. Module logic
+   - JOIN: Không cần thực hiện JOIN vì tất cả thông tin đều có trong bảng `Engineer_Visits`.
+   - AGG (Tổng hợp):
+     - Hàm: `COUNT(*)` để đếm số lượt đến.
+     - GROUP BY: Nhóm kết quả theo năm đã trích xuất từ `visit_start_datetime`.
+   - TEMPORAL (Thời gian):
+     - Cột thời gian: `visit_start_datetime`.
+     - Kỹ thuật: Sử dụng hàm `strftime('%Y', visit_start_datetime)` của SQLite để lấy ra năm từ chuỗi ngày tháng.
+5. Hoàn thiện & kiểm tra
+   - ORDER BY: Sắp xếp kết quả theo năm tăng dần để dễ theo dõi.
+   - NULL handling: Nếu `visit_start_datetime` là NULL, `strftime` sẽ trả về NULL và được nhóm vào một nhóm riêng. `COUNT(*)` vẫn sẽ đếm dòng đó. Logic này chấp nhận được.
+   - Tên cột & dialect: `Engineer_Visits` và `visit_start_datetime` tồn tại trong schema. `strftime` là hàm chuẩn của SQLite. Truy vấn hoàn toàn tương thích."
 222,assets_maintenance,"Với mỗi lỗi linh kiện, hãy cho biết nó thuộc loại linh kiện nào và đã từng xuất hiện trong bao nhiêu lần ghi nhận sự cố khác nhau.",L5,NL-L1,3-table join Parts + Part_Faults + Fault_Log_Parts with distinct counts; L5 multi-join.,"SELECT
   T2.part_name,
   T1.fault_description,
@@ -8376,7 +8629,39 @@ WHERE
     SELECT
       asset_id
     FROM Fault_Log
-  );",
+  );","1. Mục tiêu & grain
+   - **Mục tiêu:** Liệt kê các tài sản cùng với tên của công ty bảo trì cho tài sản đó.
+   - **Điều kiện:** Chỉ hiển thị những tài sản đã có ít nhất một bản ghi trong nhật ký sự cố (`Fault_Log`).
+   - **Loại câu trả lời:** Liệt kê.
+   - **Grain:** Mỗi dòng đại diện cho một tài sản duy nhất thỏa mãn điều kiện.
+2. Gắn khái niệm vào schema
+   - **Tài sản:** Bảng `Assets`. Thông tin cần lấy là `Assets.asset_details`.
+   - **Tên đơn vị bảo trì:**
+     - `Assets` liên kết với `Maintenance_Contracts` qua `maintenance_contract_id`.
+     - `Maintenance_Contracts` liên kết với `Third_Party_Companies` (đơn vị bảo trì) qua `maintenance_contract_company_id`.
+     - Tên công ty nằm ở `Third_Party_Companies.company_name`.
+   - **Có ít nhất một lần ghi nhận sự cố:**
+     - Sự cố được ghi lại trong bảng `Fault_Log`.
+     - Bảng `Fault_Log` có cột `asset_id` để liên kết với tài sản tương ứng trong bảng `Assets`.
+     - Điều kiện này có nghĩa là `asset_id` của tài sản phải tồn tại trong bảng `Fault_Log`.
+3. Khung truy vấn
+   - **Anchor table:** `Assets` là bảng chính vì chúng ta đang liệt kê tài sản.
+   - **SELECT fields:** `Assets.asset_details` và `Third_Party_Companies.company_name`.
+   - **CTE:** Không cần thiết, các phép nối khá đơn giản.
+   - **Lọc:** Sử dụng `WHERE` clause với `IN` hoặc `EXISTS` để lọc các tài sản có trong `Fault_Log`.
+4. Module logic
+ (chỉ ghi module thật sự cần)
+   - **JOIN:**
+     1. `Assets` (T1) JOIN `Maintenance_Contracts` (T2) ON `T1.maintenance_contract_id = T2.maintenance_contract_id`.
+     2. `Maintenance_Contracts` (T2) JOIN `Third_Party_Companies` (T3) ON `T2.maintenance_contract_company_id = T3.company_id`.
+   - **Lọc (Subquery):**
+     - Điều kiện lọc chính là `WHERE T1.asset_id IN (SELECT asset_id FROM Fault_Log)`.
+     - Cách này đảm bảo rằng chỉ những tài sản có `asset_id` xuất hiện trong bảng `Fault_Log` mới được chọn. Nó cũng tự động xử lý việc một tài sản có thể có nhiều lỗi mà không tạo ra các hàng trùng lặp trong kết quả cuối cùng.
+5. Hoàn thiện & kiểm tra
+   - **ORDER BY:** Câu hỏi không yêu cầu thứ tự cụ thể, không cần thêm `ORDER BY`.
+   - **Alias:** Đặt alias cho các bảng (T1, T2, T3) và sử dụng tiền tố đầy đủ cho tất cả các cột để tránh nhầm lẫn.
+   - **Dialect:** Câu truy vấn sử dụng JOIN và subquery `IN`, hoàn toàn tương thích với SQLite.
+   - **Kiểm tra logic:** Truy vấn sẽ lấy thông tin tài sản, nối để tìm tên công ty bảo trì, sau đó lọc kết quả để chỉ giữ lại những tài sản có id nằm trong danh sách các tài sản đã báo lỗi. Logic này hoàn toàn khớp với yêu cầu."
 224,assets_maintenance,Thống kê theo từng đơn vị bảo trì: có bao nhiêu hợp đồng và tổng số tài sản nằm trong các hợp đồng đó.,L5,NL-L2,Multi-join with distinct contract counting and asset totals; L5 with aggregation.,"SELECT
   T1.company_name,
   COUNT(DISTINCT T2.maintenance_contract_id),
@@ -10333,9 +10618,47 @@ ORDER BY email_address;","1. Mục tiêu & grain
    - NULL handling: Có khả năng cột `email_address` trong một số hàng bị NULL. Để đảm bảo danh sách chỉ chứa các email hợp lệ, ta nên thêm điều kiện `WHERE email_address IS NOT NULL` vào cả hai câu lệnh `SELECT`.
    - Tên cột, bảng đều khớp với schema và `UNION` là cú pháp chuẩn của SQLite.
    - Do mỗi câu `SELECT` chỉ truy vấn từ một bảng, không cần đặt alias hay prefix."
-268,behavior_monitoring,Liệt kê các thành phố có học sinh nhưng không có giáo viên nào ở đó.,L7,NL-L3,EXCEPT computes cities present for students but absent for teachers; L7 set difference + negation.,"SELECT T2.city FROM Students AS T1 INNER JOIN Addresses AS T2 ON T1.address_id = T2.address_id
+268,behavior_monitoring,Liệt kê các thành phố có học sinh nhưng không có giáo viên nào ở đó.,L7,NL-L3,EXCEPT computes cities present for students but absent for teachers; L7 set difference + negation.,"SELECT T1.city FROM Addresses AS T1 INNER JOIN Students AS T2 ON T1.address_id = T2.address_id
 EXCEPT
-SELECT T2.city FROM Teachers AS T1 INNER JOIN Addresses AS T2 ON T1.address_id = T2.address_id",
+SELECT T1.city FROM Addresses AS T1 INNER JOIN Teachers AS T2 ON T1.address_id = T2.address_id","1. Mục tiêu & grain
+- Mục tiêu: Liệt kê các thành phố có ít nhất một học sinh sinh sống, nhưng không có giáo viên nào sinh sống.
+- Loại câu trả lời: Liệt kê.
+- Grain: 1 dòng = 1 tên thành phố.
+2. Gắn khái niệm vào schema
+- ""Học sinh"": `Students` table.
+- ""Giáo viên"": `Teachers` table.
+- ""Thành phố"": `Addresses` table, cột `city`.
+- Mối quan hệ ""học sinh ở thành phố"": `Students.address_id` -> `Addresses.address_id`.
+- Mối quan hệ ""giáo viên ở thành phố"": `Teachers.address_id` -> `Addresses.address_id`.
+3. Khung truy vấn
+- Ta cần tìm hai tập hợp thành phố:
+    1. Tập A: Các thành phố có học sinh.
+    2. Tập B: Các thành phố có giáo viên.
+- Kết quả cuối cùng là các thành phố thuộc tập A nhưng không thuộc tập B.
+- Phép toán tập hợp `EXCEPT` rất phù hợp cho logic này.
+- Cấu trúc sẽ là: `(SELECT các thành phố của học sinh) EXCEPT (SELECT các thành phố của giáo viên)`.
+- Các trường sẽ SELECT: `Addresses.city`.
+4. Module logic
+- **Module 1: Lấy danh sách các thành phố có học sinh.**
+    - JOIN: `Students` và `Addresses` qua khóa ngoại `address_id`.
+    - SELECT: `SELECT DISTINCT T1.city` từ `Addresses` (alias T1) sau khi join với `Students` (alias T2). Cần `DISTINCT` để mỗi thành phố chỉ xuất hiện một lần.
+- **Module 2: Lấy danh sách các thành phố có giáo viên.**
+    - JOIN: `Teachers` và `Addresses` qua khóa ngoại `address_id`.
+    - SELECT: `SELECT DISTINCT T1.city` từ `Addresses` (alias T1) sau khi join với `Teachers` (alias T2). Cần `DISTINCT` để mỗi thành phố chỉ xuất hiện một lần.
+- **Module 3: Dùng SET operator.**
+    - Lấy kết quả của Module 1 và dùng `EXCEPT` để loại bỏ các thành phố từ kết quả của Module 2. `EXCEPT` trong SQLite tự động trả về các giá trị duy nhất, nên `DISTINCT` trong các subquery không bắt buộc nhưng giúp rõ ràng về ý định.
+5. Hoàn thiện & kiểm tra
+- Câu truy vấn sẽ có dạng:
+  ```sql
+  SELECT ... FROM Addresses JOIN Students ...
+  EXCEPT
+  SELECT ... FROM Addresses JOIN Teachers ...
+  ```
+- Tất cả các cột (`city`, `address_id`) đều tồn tại trong schema.
+- Các join được thực hiện trên các khóa ngoại hợp lệ.
+- Phép toán `EXCEPT` được SQLite hỗ trợ.
+- Không cần `ORDER BY` vì không có yêu cầu sắp xếp.
+- Không có vấn đề về NULL cần xử lý đặc biệt. Logic `EXCEPT` hoạt động đúng."
 269,behavior_monitoring,Liệt kê các học sinh có ít nhất một lần bị kỷ luật nhưng không hề có ghi chú nhận xét nào.,L9,NL-L6,Combines EXISTS and NOT EXISTS to express 'has detention but no notes'; L9 anti-join logic.,"SELECT
   T1.first_name,
   T1.last_name
@@ -14196,30 +14519,38 @@ ORDER BY
 - **ORDER BY**: Không được yêu cầu, nhưng sắp xếp theo họ (`Lname`) và tên (`Fname`) của giảng viên sẽ giúp kết quả dễ đọc hơn.
 - **Aliases**: Đã sử dụng alias cho tất cả các bảng (`T1`, `T2`, `T3`) và tiền tố cho tất cả các cột để rõ ràng.
 - **Kiểm tra logic**: Truy vấn tìm các giảng viên (`T1`) có tham gia hoạt động (`T2`) mà hoạt động đó cũng có sinh viên tham gia (`T3`). Logic này hoàn toàn khớp với yêu cầu. `DISTINCT` đảm bảo mỗi giảng viên chỉ xuất hiện một lần. Câu lệnh tương thích với SQLite."
-357,activity_1,"Với mỗi chuyên ngành, hãy cho biết tỉ lệ sinh viên nữ trong chuyên ngành đó (dạng số thập phân từ 0 đến 1).",L6,NL-L1,Conditional SUM inside ratio; CAST to REAL prevents integer-division truncation in SQLite.,"```json
-[
-  {""box_2d"": [770, 48, 792, 290]},
-  {""box_2d"": [792, 48, 814, 290]},
-  {""box_2d"": [814, 48, 836, 290]},
-  {""box_2d"": [836, 48, 858, 290]},
-  {""box_2d"": [858, 48, 880, 290]},
-  {""box_2d"": [880, 48, 902, 290]},
-  {""box_2d"": [902, 48, 924, 290]},
-  {""box_2d"": [924, 48, 946, 290]},
-  {""box_2d"": [946, 48, 968, 290]},
-  {""box_2d"": [968, 48, 990, 290]},
-  {""box_2d"": [770, 314, 792, 556]},
-  {""box_2d"": [792, 314, 814, 556]},
-  {""box_2d"": [814, 314, 836, 556]},
-  {""box_2d"": [836, 314, 858, 556]},
-  {""box_2d"": [858, 314, 880, 556]},
-  {""box_2d"": [880, 314, 902, 556]},
-  {""box_2d"": [902, 314, 924, 556]},
-  {""box_2d"": [924, 314, 946, 556]},
-  {""box_2d"": [946, 314, 968, 556]},
-  {""box_2d"": [968, 314, 990, 556]}
-]
-```",
+357,activity_1,"Với mỗi chuyên ngành, hãy cho biết tỉ lệ sinh viên nữ trong chuyên ngành đó (dạng số thập phân từ 0 đến 1).",L6,NL-L1,Conditional SUM inside ratio; CAST to REAL prevents integer-division truncation in SQLite.,"SELECT
+  T1.Major,
+  CAST(SUM(CASE WHEN T1.Sex = 'F' THEN 1 ELSE 0 END) AS REAL) / COUNT(T1.StuID)
+FROM Student AS T1
+GROUP BY
+  T1.Major;","1. Mục tiêu & grain
+   - Mục tiêu: Tính toán một giá trị thống kê. Cụ thể là với mỗi chuyên ngành, tính tỉ lệ sinh viên nữ trên tổng số sinh viên của chuyên ngành đó.
+   - Loại câu trả lời: Thống kê, liệt kê kết quả theo từng chuyên ngành.
+   - Grain (Đơn vị của một dòng kết quả): 1 dòng = 1 chuyên ngành (Major).
+2. Gắn khái niệm vào schema
+   - ""Chuyên ngành"": Ánh xạ tới cột `Major` trong bảng `Student`.
+   - ""Sinh viên nữ"": Điều kiện `Sex = 'F'` trong bảng `Student`.
+   - ""Tỉ lệ"": Đây là một giá trị cần tính toán. Công thức là: `(Số lượng sinh viên nữ trong một chuyên ngành) / (Tổng số sinh viên trong chuyên ngành đó)`. Tất cả thông tin này đều có trong bảng `Student`.
+3. Khung truy vấn
+   - Anchor table: Chỉ cần bảng `Student` vì nó chứa tất cả các thông tin cần thiết: `StuID` (để đếm), `Major` (để gom nhóm), và `Sex` (để lọc sinh viên nữ).
+   - CTE: Không cần thiết vì logic tính toán có thể thực hiện trực tiếp bằng hàm tổng hợp.
+   - Các trường sẽ SELECT: `Major` và cột tỉ lệ được tính toán.
+4. Module logic
+   - JOIN: Không cần JOIN.
+   - AGG: Đây là phần cốt lõi của truy vấn.
+     - `GROUP BY`: Cần nhóm các sinh viên theo chuyên ngành, vậy nên sẽ là `GROUP BY Major`.
+     - Hàm tổng hợp:
+       - Để đếm tổng số sinh viên trong mỗi chuyên ngành, ta dùng `COUNT(StuID)`.
+       - Để đếm số sinh viên nữ trong mỗi chuyên ngành, ta dùng một biểu thức `CASE` bên trong hàm `SUM`: `SUM(CASE WHEN Sex = 'F' THEN 1 ELSE 0 END)`.
+     - Tính toán tỉ lệ: `(Số sinh viên nữ) / (Tổng số sinh viên)`.
+     - **Lưu ý quan trọng**: Trong SQLite, phép chia hai số nguyên sẽ cho kết quả là một số nguyên (phần nguyên bị cắt bỏ). Ví dụ `5 / 10 = 0`. Để có kết quả dạng số thập phân, ta cần ép kiểu (cast) một trong hai toán hạng sang kiểu số thực (REAL). Ví dụ: `CAST(SUM(...) AS REAL) / COUNT(...)`.
+5. Hoàn thiện & kiểm tra
+   - ORDER BY: Sắp xếp kết quả theo `Major` để dễ đọc hơn.
+   - NULL handling: Không có rủi ro chia cho 0 vì một nhóm (`Major`) chỉ xuất hiện trong kết quả nếu có ít nhất một sinh viên, do đó `COUNT(StuID)` sẽ luôn >= 1.
+   - COUNT(*) vs COUNT(col): `COUNT(StuID)` (với `StuID` là khóa chính) có ý nghĩa tương đương `COUNT(*)` trong trường hợp này, đều là đếm số sinh viên.
+   - Alias: Sử dụng alias `T1` cho bảng `Student` để tuân thủ quy tắc, dù chỉ có một bảng. Đặt tên alias cho cột kết quả là `female_ratio` cho rõ ràng.
+   - Dialect: Các hàm `SUM`, `COUNT`, `CASE`, `CAST` đều là chuẩn SQL và hoạt động tốt trên SQLite."
 358,activity_1,"Trong từng hoạt động, hãy liệt kê danh sách họ tên sinh viên tham gia theo thứ tự họ tên tăng dần, gộp trên một dòng và ngăn cách bằng dấu “; ”.",L6,NL-L1,Uses GROUP_CONCAT with a custom separator; a pre-dedup CTE avoids DISTINCT+separator pitfalls.,"SELECT
   T.activity_name,
   GROUP_CONCAT(T.student_full_name, '; ') AS student_list
@@ -14273,12 +14604,38 @@ ORDER BY
 - **ORDER BY cuối cùng**: Sắp xếp kết quả cuối cùng theo tên hoạt động để dễ đọc. `ORDER BY T1.activity_name`.
 - **Kiểm tra**: Các tên bảng, cột đều khớp với schema. Logic join, group, và sắp xếp đều đáp ứng yêu cầu. Câu lệnh tương thích với SQLite."
 359,activity_1,"Hãy cho biết trong mỗi tòa nhà, có bao nhiêu giảng viên nam và bao nhiêu giảng viên nữ.",L6,NL-L1,"Conditional aggregation via CASE WHEN inside SUM, grouped by building.","SELECT
-  Building,
-  SUM(CASE WHEN Sex = 'M' THEN 1 ELSE 0 END) AS so_giang_vien_nam,
-  SUM(CASE WHEN Sex = 'F' THEN 1 ELSE 0 END) AS so_giang_vien_nu
-FROM Faculty
+  T1.Building,
+  T1.Sex,
+  COUNT(T1.FacID) AS so_luong_giang_vien
+FROM Faculty AS T1
 GROUP BY
-  Building;",
+  T1.Building,
+  T1.Sex
+ORDER BY
+  T1.Building,
+  T1.Sex;","1. Mục tiêu & grain
+   - Mục tiêu: Thống kê số lượng giảng viên theo giới tính (nam, nữ) cho mỗi tòa nhà.
+   - Loại câu trả lời: Thống kê.
+   - Grain (Độ chi tiết): Mỗi dòng trong kết quả sẽ đại diện cho một cặp (tòa nhà, giới tính). Ví dụ: (Tòa nhà NEB, Giới tính M), (Tòa nhà NEB, Giới tính F).
+2. Gắn khái niệm vào schema
+   - ""mỗi tòa nhà"": Ánh xạ tới cột `Building` trong bảng `Faculty`.
+   - ""giảng viên"": Ánh xạ tới các dòng trong bảng `Faculty`.
+   - ""bao nhiêu"": Yêu cầu sử dụng hàm đếm, `COUNT()`.
+   - ""giảng viên nam"", ""giảng viên nữ"": Ánh xạ tới các giá trị trong cột `Sex` của bảng `Faculty`. Dựa trên ví dụ (`M`, `F`), ta giả định 'M' là nam và 'F' là nữ.
+3. Khung truy vấn
+   - Anchor table: Toàn bộ thông tin cần thiết (`Building`, `Sex`) đều nằm trong bảng `Faculty`. Do đó, chỉ cần truy vấn từ bảng này.
+   - Không cần CTE vì logic đơn giản.
+   - Các trường sẽ SELECT: `Building`, `Sex`, và kết quả của hàm `COUNT`.
+4. Module logic
+   - JOIN: Không cần thiết vì tất cả dữ liệu đều nằm trong bảng `Faculty`.
+   - AGG (Tổng hợp):
+     - Hàm: `COUNT(*)` để đếm số lượng giảng viên trong mỗi nhóm.
+     - GROUP BY: Vì câu hỏi yêu cầu ""trong mỗi tòa nhà"" và phân chia theo ""nam"" và ""nữ"", ta cần nhóm theo cả hai cột: `GROUP BY Building, Sex`.
+5. Hoàn thiện & kiểm tra
+   - ORDER BY: Để kết quả dễ đọc, nên sắp xếp theo `Building` rồi đến `Sex`.
+   - NULL handling: Không có thông tin về khả năng cột `Building` hay `Sex` bị NULL, nhưng `GROUP BY` sẽ xử lý chúng thành một nhóm riêng nếu có. Truy vấn hiện tại vẫn ổn.
+   - COUNT(*) vs COUNT(col): `COUNT(*)` là phù hợp vì ta muốn đếm số lượng dòng (giảng viên) trong mỗi nhóm.
+   - Tên cột và dialect: Các cột `Building`, `Sex` tồn tại trong bảng `Faculty`. Hàm `COUNT` và `GROUP BY` là chuẩn SQL và chạy được trên SQLite. Mặc dù chỉ dùng một bảng, ta vẫn nên dùng alias để tuân thủ thói quen tốt."
 360,activity_1,Những hoạt động nào có sinh viên tham gia nhưng không có giảng viên tham gia?,L7,NL-L3,Uses EXCEPT set operator to subtract activities with faculty from those with students (SQLite compound SELECT semantics).,SELECT T1.activity_name FROM Activity AS T1 WHERE T1.actid IN (SELECT actid FROM Participates_in EXCEPT SELECT actid FROM Faculty_Participates_in) ORDER BY T1.activity_name;,"1. Mục tiêu & grain
    - **Mục tiêu**: Liệt kê tên các hoạt động có sự tham gia của sinh viên nhưng không có sự tham gia của giảng viên.
    - **Loại câu trả lời**: Liệt kê (listing).
@@ -16258,7 +16615,28 @@ HAVING count(*) > 1;","1. Mục tiêu & grain
   bathroom_count
 FROM Apartments
 WHERE
-  bedroom_count = 2 * bathroom_count;",
+  bedroom_count = 2 * bathroom_count;","1. Mục tiêu & grain
+- Mục tiêu: Liệt kê các căn hộ có số phòng ngủ đúng bằng hai lần số phòng tắm.
+- Loại câu trả lời: Liệt kê (listing).
+- Grain: 1 dòng = 1 căn hộ thỏa mãn điều kiện.
+2. Gắn khái niệm vào schema
+- ""Căn hộ"": Khái niệm này tương ứng với bảng `Apartments`. Cột định danh chính là `apt_id` và `apt_number`.
+- ""số phòng ngủ"": Tương ứng trực tiếp với cột `bedroom_count` trong bảng `Apartments`.
+- ""số phòng tắm"": Tương ứng trực tiếp với cột `bathroom_count` trong bảng `Apartments`.
+- Điều kiện ""gấp đôi"": Đây là một phép so sánh toán học, có thể biểu diễn bằng `bedroom_count = 2 * bathroom_count`.
+3. Khung truy vấn
+- Anchor table: Toàn bộ thông tin cần thiết (`apt_id`, `apt_number`, `bedroom_count`, `bathroom_count`) đều nằm trong bảng `Apartments`.
+- CTE: Không cần thiết vì truy vấn khá đơn giản, không có subquery lồng nhau.
+- SELECT fields: Sẽ chọn `apt_id`, `apt_number` để xác định căn hộ, và `bedroom_count`, `bathroom_count` để kiểm tra lại kết quả.
+4. Module logic
+- JOIN: Không cần JOIN vì tất cả dữ liệu đều có trong một bảng duy nhất là `Apartments`.
+- WHERE: Phần logic cốt lõi sẽ nằm trong mệnh đề `WHERE` để lọc các căn hộ. Điều kiện lọc là `bedroom_count = 2 * bathroom_count`.
+- AGG: Không cần hàm tổng hợp vì câu hỏi yêu cầu liệt kê từng căn hộ riêng lẻ, không phải thống kê theo nhóm.
+5. Hoàn thiện & kiểm tra
+- ORDER BY: Sắp xếp kết quả theo `apt_id` để đảm bảo tính nhất quán và dễ đọc.
+- NULL handling: Giả định rằng `bedroom_count` và `bathroom_count` là các số và không NULL. Nếu chúng có thể là NULL, phép so sánh sẽ tự động xử lý (kết quả là UNKNOWN và hàng đó sẽ không được trả về), điều này phù hợp với yêu cầu.
+- Tên cột và bảng: `Apartments`, `apt_id`, `apt_number`, `bedroom_count`, `bathroom_count` đều tồn tại trong schema.
+- SQLite compatibility: Phép so sánh toán học `col1 = 2 * col2` là cú pháp SQL tiêu chuẩn và hoàn toàn tương thích với SQLite."
 417,apartment_rentals,Hãy liệt kê tên quản lý tòa nhà và số lượng khách hàng nam đã từng đặt phòng ở đó.,L5,NL-L1,4-table join with distinct counting and categorical filtering.,"SELECT
   T1.building_manager,
   COUNT(DISTINCT T4.guest_id)
@@ -17202,12 +17580,37 @@ GROUP BY
    - NULL handling: Không có thông tin về NULL, giả sử `booking_status_code` luôn có giá trị. `COUNT(*)` sẽ xử lý đúng ngay cả khi có các giá trị NULL ở các cột khác.
    - COUNT(*) vs COUNT(col): Dùng `COUNT(*)` là hiệu quả và đúng đắn nhất để đếm số dòng.
    - Tên cột tồn tại, cú pháp tương thích với SQLite."
-437,apartment_rentals,"Liệt kê mã căn hộ, số căn, số phòng ngủ và tên tòa nhà mà căn hộ thuộc về.",L4,NL-L1,Single JOIN between apartments and buildings using the declared FK.,"```json
-{
-""thought"": ""1) Mục tiêu & grain\n   - Mục tiêu: Liệt kê một danh sách các căn hộ với các thông tin chi tiết được yêu cầu.\n   - Loại câu trả lời: Liệt kê.\n   - Grain: 1 dòng = 1 căn hộ.\n\n2) Gắn khái niệm vào schema\n   - \""mã căn hộ\"" -> `Apartments`.`apt_id`\n   - \""số căn\"" -> `Apartments`.`apt_number`\n   - \""số phòng ngủ\"" -> `Apartments`.`bedroom_count`\n   - \""tên tòa nhà\"" -> `Apartment_Buildings`.`building_full_name`. Giả định rằng \""tên tòa nhà\"" là tên đầy đủ, không phải tên viết tắt.\n\n3) Khung truy vấn\n   - Anchor table: `Apartments` vì nó chứa hầu hết các thông tin cần thiết.\n   - Các trường cần SELECT: `t1.apt_id`, `t1.apt_number`, `t1.bedroom_count`, `t2.building_full_name`.\n   - Không cần CTE.\n\n4) Module logic\n   - JOIN: Cần kết nối bảng `Apartments` với `Apartment_Buildings` để lấy được tên tòa nhà.\n     - Đường join: `Apartments` JOIN `Apartment_Buildings`\n     - Khóa join: `Apartments.building_id` = `Apartment_Buildings.building_id`.\n   - Không cần AGG, TEMPORAL, SET, RANK, DEDUP.\n\n5) Hoàn thiện & kiểm tra\n   - Không có yêu cầu sắp xếp cụ thể, không cần `ORDER BY`.\n   - Không có yêu cầu giới hạn, không cần `LIMIT`.\n   - Không có xử lý NULL.\n   - Các tên cột và bảng đã được kiểm tra và tồn tại trong schema.\n   - Sử dụng alias cho các bảng (`t1` cho `Apartments`, `t2` cho `Apartment_Buildings`) và prefix đầy đủ cho các cột để đảm bảo tính rõ ràng."",
-""sql"": ""-- một câu SQL duy nhất (có thể dùng WITH), không comment giải thích trong này\nSELECT\n  T1.apt_id,\n  T1.apt_number,\n  T1.bedroom_count,\n  T2.building_full_name\nFROM Apartments AS T1\nINNER JOIN Apartment_Buildings AS T2\n  ON T1.building_id = T2.building_id;""
-}
-```",
+437,apartment_rentals,"Liệt kê mã căn hộ, số căn, số phòng ngủ và tên tòa nhà mà căn hộ thuộc về.",L4,NL-L1,Single JOIN between apartments and buildings using the declared FK.,"SELECT
+  T1.apt_id,
+  T1.apt_number,
+  T1.bedroom_count,
+  T2.building_full_name
+FROM Apartments AS T1
+JOIN Apartment_Buildings AS T2
+  ON T1.building_id = T2.building_id;","1. Mục tiêu & grain
+   - Mục tiêu: Liệt kê thông tin chi tiết về các căn hộ, bao gồm mã, số căn, số phòng ngủ và tên tòa nhà.
+   - Loại câu trả lời: Liệt kê.
+   - Grain: Mỗi dòng là một căn hộ.
+2. Gắn khái niệm vào schema
+   - `mã căn hộ` → `Apartments.apt_id`
+   - `số căn` → `Apartments.apt_number`
+   - `số phòng ngủ` → `Apartments.bedroom_count`
+   - `tên tòa nhà` → `Apartment_Buildings.building_full_name` (sử dụng tên đầy đủ cho rõ ràng)
+3. Khung truy vấn
+   - Anchor table: `Apartments` vì nó chứa hầu hết các thông tin cần thiết.
+   - JOIN với `Apartment_Buildings` để lấy tên tòa nhà.
+   - Các cột sẽ SELECT: `t1.apt_id`, `t1.apt_number`, `t1.bedroom_count`, `t2.building_full_name`.
+4. Module logic
+ (chỉ ghi module thật sự cần)
+   - **JOIN**:
+     - `Apartments` (alias `t1`) JOIN `Apartment_Buildings` (alias `t2`)
+     - Khóa join: `t1.building_id = t2.building_id`
+5. Hoàn thiện & kiểm tra
+   - Câu hỏi không yêu cầu sắp xếp cụ thể, nên không cần `ORDER BY`.
+   - Không có tính toán, không cần xử lý `NULL`.
+   - Tất cả các cột được yêu cầu đã có trong câu lệnh `SELECT`.
+   - Các tên bảng và cột đều khớp với schema.
+   - Sử dụng alias cho bảng và prefix đầy đủ cho cột để đảm bảo tính rõ ràng và chính xác."
 438,apartment_rentals,Liệt kê các lượt đặt chỗ kèm theo họ tên khách và khoảng thời gian lưu trú.,L4,NL-L1,Single JOIN (bookings→guests) to attach guest identity to each booking.,"SELECT
   T1.apt_booking_id,
   T2.guest_first_name || ' ' || T2.guest_last_name AS guest_full_name,
@@ -18373,12 +18776,63 @@ ORDER BY
    - Truy vấn cuối cùng `JOIN` CTE đã xếp hạng với bảng `Apartment_Buildings` để lấy tên tòa nhà, giúp kết quả dễ đọc hơn.
    - Thêm một mệnh đề `ORDER BY` ở cuối (ví dụ: `ORDER BY T2.building_id`) để đảm bảo kết quả trả về có thứ tự nhất quán.
    - Cú pháp `WITH ... AS (...)`, `ROW_NUMBER() OVER (...)` đều tương thích với SQLite."
-467,apartment_rentals,Xếp hạng khách theo tổng số ngày ở đã xác nhận (từ nhiều đến ít); nếu bằng nhau thì cùng hạng.,L12,NL-L4,Aggregates confirmed stay-days then ranks guests with a window RANK().,"```json
-{
-""thought"": ""1.  **Mục tiêu & grain**\n    *   Mục tiêu: Tạo một bảng xếp hạng khách hàng dựa trên tổng số ngày họ đã lưu trú từ các đặt phòng đã được xác nhận.\n    *   Loại câu trả lời: Xếp hạng (top-k).\n    *   Grain: Mỗi dòng đại diện cho một khách hàng, bao gồm tên, tổng số ngày ở và thứ hạng của họ.\n\n2.  **Gắn khái niệm vào schema**\n    *   \""khách\"": Bảng `Guests`, sử dụng các cột `guest_id`, `guest_first_name`, `guest_last_name`.\n    *   \""đặt phòng đã xác nhận\"": Bảng `Apartment_Bookings`, lọc theo `booking_status_code = 'Confirmed'`.\n    *   \""tổng số ngày ở\"": Tính toán bằng cách lấy hiệu giữa `booking_end_date` và `booking_start_date` từ bảng `Apartment_Bookings`. Trong SQLite, hàm `julianday()` là cách hiệu quả để tính số ngày giữa hai ngày.\n    *   \""xếp hạng\"": Sử dụng hàm cửa sổ `DENSE_RANK()` vì yêu cầu là \""nếu bằng nhau thì cùng hạng\"" và không tạo khoảng trống trong thứ tự (ví dụ: 1, 2, 2, 3).\n\n3.  **Khung truy vấn**\n    *   Sẽ sử dụng CTE để tính tổng số ngày ở cho mỗi khách trước.\n    *   CTE này sẽ JOIN `Guests` và `Apartment_Bookings`.\n    *   Truy vấn chính sẽ SELECT từ CTE và áp dụng hàm `DENSE_RANK()`.\n    *   Các cột cuối cùng sẽ là tên khách, tổng số ngày ở và thứ hạng.\n\n4.  **Module logic (chỉ ghi module thật sự cần)**\n    *   **JOIN**: `Guests` (t1) và `Apartment_Bookings` (t2) sẽ được kết nối bằng khóa ngoại `t1.guest_id = t2.guest_id`.\n    *   **AGG**: Tính tổng số ngày ở cho mỗi khách bằng `SUM(julianday(t2.booking_end_date) - julianday(t2.booking_start_date))`. Cần `GROUP BY` theo `t1.guest_id` để tổng hợp tất cả các lần đặt phòng của một khách.\n    *   **FILTER**: Cần một mệnh đề `WHERE` để chỉ tính các đặt phòng có `t2.booking_status_code = 'Confirmed'`.\n    *   **RANK**: Áp dụng `DENSE_RANK() OVER (ORDER BY [tổng_số_ngày_ở] DESC)` để xếp hạng khách từ cao xuống thấp.\n\n5.  **Hoàn thiện & kiểm tra**\n    *   Cấu trúc CTE `GuestStaySummary` sẽ tính tổng ngày ở cho mỗi khách đã được xác nhận.\n    *   Truy vấn bên ngoài sẽ chọn từ CTE này và tính toán thứ hạng.\n    *   Sắp xếp kết quả cuối cùng theo thứ hạng (`ORDER BY guest_rank ASC`).\n    *   Tất cả các tên cột (`guest_id`, `guest_first_name`, `guest_last_name`, `booking_status_code`, `booking_start_date`, `booking_end_date`) và bảng (`Guests`, `Apartment_Bookings`) đều tồn tại trong schema.\n    *   Sử dụng `julianday()` là đúng chuẩn SQLite.\n    *   Việc sử dụng alias bảng và prefix cột khi JOIN đã được tuân thủ. Logic xếp hạng giảm dần và xử lý đồng hạng đúng với yêu cầu."",
-""sql"": ""WITH GuestTotalDays AS (\n  SELECT\n    T1.guest_id,\n    T1.guest_first_name,\n    T1.guest_last_name,\n    SUM(julianday(T2.booking_end_date) - julianday(T2.booking_start_date)) AS total_stay_days\n  FROM Guests AS T1\n  JOIN Apartment_Bookings AS T2\n    ON T1.guest_id = T2.guest_id\n  WHERE\n    T2.booking_status_code = 'Confirmed'\n  GROUP BY\n    T1.guest_id, T1.guest_first_name, T1.guest_last_name\n)\nSELECT\n  guest_first_name,\n  guest_last_name,\n  total_stay_days,\n  DENSE_RANK() OVER (ORDER BY total_stay_days DESC) AS guest_rank\nFROM GuestTotalDays\nORDER BY\n  guest_rank;""
-}
-```",
+467,apartment_rentals,Xếp hạng khách theo tổng số ngày ở đã xác nhận (từ nhiều đến ít); nếu bằng nhau thì cùng hạng.,L12,NL-L4,Aggregates confirmed stay-days then ranks guests with a window RANK().,"WITH GuestTotalDays AS (
+  SELECT
+    T1.guest_id,
+    SUM(julianday(T1.booking_end_date) - julianday(T1.booking_start_date)) AS total_stay_days
+  FROM Apartment_Bookings AS T1
+  WHERE
+    T1.booking_status_code = 'Confirmed'
+  GROUP BY
+    T1.guest_id
+)
+SELECT
+  T2.guest_first_name,
+  T2.guest_last_name,
+  T1.total_stay_days,
+  DENSE_RANK() OVER (
+    ORDER BY
+      T1.total_stay_days DESC
+  ) AS ranking
+FROM GuestTotalDays AS T1
+JOIN Guests AS T2
+  ON T1.guest_id = T2.guest_id
+ORDER BY
+  ranking ASC;","1. Mục tiêu & grain
+- **Mục tiêu**: Lập một bảng xếp hạng các khách hàng. Tiêu chí xếp hạng là tổng số ngày họ đã ở, chỉ tính các lần đặt phòng có trạng thái ""Confirmed"". Những khách có cùng tổng số ngày sẽ có cùng một thứ hạng. Đây là một câu hỏi loại top-k / xếp hạng.
+- **Grain**: Mỗi dòng trong kết quả cuối cùng sẽ đại diện cho một khách hàng, cùng với tổng số ngày ở đã xác nhận và thứ hạng của họ.
+2. Gắn khái niệm vào schema
+- **""khách""**: Được xác định bởi `guest_id` trong bảng `Guests`. Thông tin hiển thị sẽ là `guest_first_name` và `guest_last_name`.
+- **""tổng số ngày ở""**: Đây là một giá trị cần tính toán. Với mỗi lần đặt phòng, số ngày ở là hiệu của `booking_end_date` và `booking_start_date` trong bảng `Apartment_Bookings`. Tổng số ngày là tổng của các khoảng thời gian này cho mỗi khách. Trong SQLite, hàm `julianday()` rất phù hợp để tính chênh lệch ngày.
+- **""đã xác nhận""**: Điều kiện này được lọc qua cột `booking_status_code` trong bảng `Apartment_Bookings`. Giá trị cần tìm là 'Confirmed'.
+- **""xếp hạng ... từ nhiều đến ít""**: Điều này yêu cầu sử dụng một hàm cửa sổ (window function) như `RANK()` hoặc `DENSE_RANK()`. Vì yêu cầu ""nếu bằng nhau thì cùng hạng"", cả hai đều phù hợp. `DENSE_RANK()` sẽ tạo ra một chuỗi hạng không có khoảng trống (1, 2, 2, 3), trong khi `RANK()` sẽ có khoảng trống (1, 2, 2, 4). `DENSE_RANK()` thường được ưa thích hơn trong các báo cáo kinh doanh, vì vậy tôi sẽ chọn nó. Thứ tự xếp hạng là giảm dần (`DESC`) theo tổng số ngày.
+3. Khung truy vấn
+- Tôi sẽ sử dụng một Common Table Expression (CTE) tên là `GuestTotalDays` để thực hiện bước tính toán phức tạp trước.
+- **CTE `GuestTotalDays`**:
+    - `FROM Apartment_Bookings`
+    - `WHERE booking_status_code = 'Confirmed'`
+    - `GROUP BY guest_id`
+    - `SELECT guest_id, SUM(julianday(booking_end_date) - julianday(booking_start_date)) AS total_days`
+- **Truy vấn chính**:
+    - `FROM` CTE `GuestTotalDays`
+    - `JOIN` với bảng `Guests` qua `guest_id`.
+    - `SELECT` tên khách, `total_days`, và kết quả của hàm `DENSE_RANK()`.
+4. Module logic
+- **JOIN**:
+    - `GuestTotalDays` (alias `t1`) `JOIN` `Guests` (alias `t2`) `ON` `t1.guest_id = t2.guest_id`.
+- **AGG**:
+    - `SUM(julianday(t1.booking_end_date) - julianday(t1.booking_start_date))`
+    - `GROUP BY t1.guest_id`
+- **RANK**:
+    - `DENSE_RANK() OVER (ORDER BY total_days DESC)`
+- **FILTER**:
+    - `WHERE t1.booking_status_code = 'Confirmed'` trong CTE.
+5. Hoàn thiện & kiểm tra
+- **ORDER BY**: Kết quả cuối cùng nên được sắp xếp theo thứ hạng tăng dần (`ORDER BY rank_num ASC`) để dễ đọc.
+- **ALIAS**: Các bảng sẽ được đặt alias (t1, t2) và các cột sẽ được tiền tố đầy đủ trong các phép JOIN để rõ ràng.
+- **COMPATIBILITY**: Hàm `julianday()` và hàm cửa sổ `DENSE_RANK()` đều được hỗ trợ trong SQLite.
+- **NULL HANDLING**: Không có rủi ro về NULL rõ ràng trong các cột tính toán (`booking_start_date`, `booking_end_date`), nhưng nếu có, `julianday()` sẽ trả về NULL và `SUM` sẽ bỏ qua chúng, đây là hành vi mong muốn.
+- **LOGIC CHECK**: Logic bao gồm việc lọc các booking đã xác nhận trước, sau đó tính tổng số ngày cho mỗi khách, và cuối cùng là xếp hạng. Luồng này hoàn toàn chính xác theo yêu cầu."
 468,apartment_rentals,"Với từng căn hộ, hãy hiển thị lịch sử trạng thái trống/giải phóng theo thời gian, kèm theo trạng thái ngay trước đó và cờ cho biết có đổi trạng thái hay không.",L12,NL-L6,Uses LAG() to access the previous availability value per apartment and flags changes.,"WITH StatusHistory AS (
   SELECT
     apt_id,
