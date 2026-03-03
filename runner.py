@@ -118,6 +118,9 @@ def create_model(name: str) -> BaseReasoningModel:
     elif name == "deepseek":
         from deepseek_model import DeepSeekModel
         return DeepSeekModel()
+    elif name == "openai":
+        from openai_model import OpenAIModel
+        return OpenAIModel()
     else:
         raise ValueError(f"Unknown model: {name}")
 
@@ -149,12 +152,18 @@ def process_question(
     # 2. Build prompt
     prompt = prompt_template.format(schema=schema, question=question)
 
+    # Check if model supports cache-optimized generation
+    has_cache_gen = hasattr(model, "generate_with_cache")
+
     # 3. Call model with retry
     think_formatted = ""
     sql = ""
 
     for attempt in range(1, MAX_RETRIES + 1):
-        think_raw, sql_candidate = model.generate(prompt)
+        if has_cache_gen:
+            think_raw, sql_candidate = model.generate_with_cache(schema, question)
+        else:
+            think_raw, sql_candidate = model.generate(prompt)
         think_candidate = format_result(think_raw)
 
         has_sql = bool(sql_candidate and sql_candidate.strip())
@@ -301,8 +310,8 @@ def main():
     parser.add_argument(
         "--models",
         nargs="+",
-        choices=["gemini", "deepseek"],
-        default=["gemini", "deepseek"],
+        choices=["gemini", "deepseek", "openai"],
+        default=["gemini", "deepseek", "openai"],
         help="Models to run (default: all)",
     )
     parser.add_argument(

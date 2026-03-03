@@ -1,0 +1,5196 @@
+question_id,schema_id,sql_level,agreement,questions,questions_claude,questions_deepseek,questions_gemini,questions_gemini3_1
+20,battle_death,L15,1/5,"WITH battle_with_ship AS (
+  SELECT DISTINCT b.id, b.name, b.date
+  FROM battle b
+  JOIN ship s ON s.lost_in_battle = b.id
+),
+ordered AS (
+  SELECT id,
+         name,
+         date,
+         ROW_NUMBER() OVER (ORDER BY date) AS rn,
+         COUNT(*) OVER () AS cnt
+  FROM battle_with_ship
+),
+median AS (
+  SELECT date AS median_date
+  FROM ordered
+  WHERE rn = (cnt + 1) / 2
+)
+SELECT s.id AS ship_id,
+       s.name AS ship_name,
+       b.name AS battle_name,
+       b.date AS battle_date,
+       CASE
+         WHEN b.date < (SELECT median_date FROM median) THEN 'Earlier'
+         WHEN b.date > (SELECT median_date FROM median) THEN 'Later'
+         ELSE 'Same'
+       END AS compared_to_median
+FROM ship s
+JOIN battle b ON b.id = s.lost_in_battle
+ORDER BY ship_id;","WITH battles_with_ships AS (
+    SELECT DISTINCT s.lost_in_battle AS battle_id
+    FROM ship s
+    WHERE s.lost_in_battle IS NOT NULL
+),
+ranked_battles AS (
+    SELECT
+        bws.battle_id,
+        ROW_NUMBER() OVER (ORDER BY bws.battle_id) AS rk
+    FROM battles_with_ships bws
+),
+median_cte AS (
+    SELECT AVG(CAST(rk AS REAL)) AS median_rank
+    FROM (
+        SELECT
+            rk,
+            ROW_NUMBER() OVER (ORDER BY rk) AS pos,
+            COUNT(*)    OVER ()              AS total
+        FROM ranked_battles
+    )
+    WHERE pos IN ((total + 1) / 2, (total + 2) / 2)
+)
+SELECT
+    s.id          AS ship_id,
+    s.name        AS ship_name,
+    b.id          AS battle_id,
+    b.name        AS battle_name,
+    b.date        AS battle_date,
+    rb.rk         AS battle_rank,
+    mc.median_rank,
+    CASE
+        WHEN rb.rk < mc.median_rank THEN 'Earlier than median'
+        WHEN rb.rk > mc.median_rank THEN 'Later than median'
+        ELSE                              'Equal to median'
+    END AS comparison
+FROM ship           s
+JOIN battle         b  ON s.lost_in_battle = b.id
+JOIN ranked_battles rb ON b.id             = rb.battle_id
+CROSS JOIN median_cte mc
+WHERE s.lost_in_battle IS NOT NULL
+ORDER BY s.id;","WITH relevant_battles AS (
+    SELECT DISTINCT b.id, b.date
+    FROM battle b
+    INNER JOIN ship s ON b.id = s.lost_in_battle
+    WHERE s.lost_in_battle IS NOT NULL
+),
+battle_dates AS (
+    SELECT id, date,
+        CASE 
+            WHEN INSTR(date, ' ', INSTR(date, ' ')+1) > 0 THEN
+                SUBSTR(date, INSTR(date, ' ')+1, INSTR(date, ' ', INSTR(date, ' ')+1) - INSTR(date, ' ')-1)
+            ELSE
+                SUBSTR(date, 1, INSTR(date, ' ')-1)
+        END AS month_str,
+        CASE 
+            WHEN INSTR(date, ' ', INSTR(date, ' ')+1) > 0 THEN
+                CAST(SUBSTR(date, 1, INSTR(date, ' ')-1) AS INTEGER)
+            ELSE
+                1
+        END AS day,
+        CASE 
+            WHEN INSTR(date, ' ', INSTR(date, ' ')+1) > 0 THEN
+                SUBSTR(date, INSTR(date, ' ', INSTR(date, ' ')+1)+1)
+            ELSE
+                SUBSTR(date, INSTR(date, ' ')+1)
+        END AS year_str
+    FROM relevant_battles
+),
+battle_norm AS (
+    SELECT id, date,
+        printf('%04d-%02d-%02d', 
+            CAST(year_str AS INTEGER),
+            CASE month_str
+                WHEN 'January' THEN 1
+                WHEN 'February' THEN 2
+                WHEN 'March' THEN 3
+                WHEN 'April' THEN 4
+                WHEN 'May' THEN 5
+                WHEN 'June' THEN 6
+                WHEN 'July' THEN 7
+                WHEN 'August' THEN 8
+                WHEN 'September' THEN 9
+                WHEN 'October' THEN 10
+                WHEN 'November' THEN 11
+                WHEN 'December' THEN 12
+                ELSE 0
+            END,
+            day
+        ) AS norm_date
+    FROM battle_dates
+),
+median_cte AS (
+    SELECT norm_date AS median_date
+    FROM (
+        SELECT norm_date, 
+               ROW_NUMBER() OVER (ORDER BY norm_date) AS rn,
+               COUNT(*) OVER () AS total
+        FROM battle_norm
+    ) t
+    WHERE rn = CAST((total + 1) / 2 AS INTEGER)
+),
+ship_battle_norm AS (
+    SELECT s.id AS ship_id, s.name AS ship_name, bn.norm_date
+    FROM ship s
+    INNER JOIN battle_norm bn ON s.lost_in_battle = bn.id
+    WHERE s.lost_in_battle IS NOT NULL
+)
+SELECT ship_id, ship_name, 
+       CASE 
+           WHEN norm_date < median_date THEN 'earlier'
+           WHEN norm_date > median_date THEN 'later'
+           ELSE 'equal'
+       END AS comparison
+FROM ship_battle_norm
+CROSS JOIN median_cte
+ORDER BY ship_id;","WITH RankedBattles AS (
+  SELECT
+    T2.id AS battle_id,
+    RANK() OVER (ORDER BY T2.date) AS battle_rank,
+    COUNT(*) OVER () AS total_battles
+  FROM (
+    SELECT DISTINCT
+      lost_in_battle
+    FROM ship
+  ) AS T1
+  JOIN battle AS T2
+    ON T1.lost_in_battle = T2.id
+)
+SELECT
+  T3.name,
+  CASE
+    WHEN T4.battle_rank < (T4.total_battles + 1) / 2 THEN 'Sớm hơn'
+    WHEN T4.battle_rank > (T4.total_battles + 1) / 2 THEN 'Muộn hơn'
+    ELSE 'Bằng thời điểm trung vị'
+  END AS comparison_to_median
+FROM ship AS T3
+JOIN RankedBattles AS T4
+  ON T3.lost_in_battle = T4.battle_id
+ORDER BY
+  T3.name;","SELECT 
+  T1.name, 
+  CASE 
+    WHEN T1.lost_in_battle > (SELECT COUNT(T2.id) / 2 FROM battle AS T2) THEN 'later' 
+    ELSE 'earlier' 
+  END 
+FROM ship AS T1;"
+37,battle_death,L13,1/5,"WITH per_battle AS (
+  SELECT b.id AS battle_id,
+         b.name AS battle_name,
+         date(b.date) AS battle_day,
+         COALESCE(SUM(d.killed), 0) + COALESCE(SUM(d.injured), 0) AS casualties
+  FROM battle b
+  LEFT JOIN ship s ON s.lost_in_battle = b.id
+  LEFT JOIN death d ON d.caused_by_ship_id = s.id
+  WHERE date(b.date) IS NOT NULL
+  GROUP BY b.id, b.name, date(b.date)
+)
+SELECT battle_id,
+       battle_name,
+       battle_day,
+       casualties,
+       SUM(casualties) OVER (ORDER BY battle_day, battle_id) AS running_casualties
+FROM per_battle
+ORDER BY battle_day, battle_id;","WITH parsed AS (
+    SELECT
+        b.id,
+        b.name,
+        b.date,
+        CAST(SUBSTR(b.date, 1, INSTR(b.date, ' ') - 1) AS INTEGER) AS day,
+        SUBSTR(
+            SUBSTR(b.date, INSTR(b.date, ' ') + 1),
+            1,
+            INSTR(SUBSTR(b.date, INSTR(b.date, ' ') + 1), ' ') - 1
+        ) AS month_name,
+        CAST(
+            SUBSTR(
+                SUBSTR(b.date, INSTR(b.date, ' ') + 1),
+                INSTR(SUBSTR(b.date, INSTR(b.date, ' ') + 1), ' ') + 1
+            ) AS INTEGER
+        ) AS year
+    FROM battle b
+    WHERE (LENGTH(b.date) - LENGTH(REPLACE(b.date, ' ', ''))) = 2
+),
+with_month_num AS (
+    SELECT
+        p.id,
+        p.name,
+        p.date,
+        p.day,
+        p.year,
+        CASE p.month_name
+            WHEN 'January'   THEN 1
+            WHEN 'February'  THEN 2
+            WHEN 'March'     THEN 3
+            WHEN 'April'     THEN 4
+            WHEN 'May'       THEN 5
+            WHEN 'June'      THEN 6
+            WHEN 'July'      THEN 7
+            WHEN 'August'    THEN 8
+            WHEN 'September' THEN 9
+            WHEN 'October'   THEN 10
+            WHEN 'November'  THEN 11
+            WHEN 'December'  THEN 12
+        END AS month_num
+    FROM parsed p
+),
+casualties_per_battle AS (
+    SELECT
+        wm.id            AS battle_id,
+        wm.name          AS battle_name,
+        wm.date          AS battle_date,
+        wm.year,
+        wm.month_num,
+        wm.day,
+        COALESCE(SUM(COALESCE(d.killed, 0) + COALESCE(d.injured, 0)), 0) AS total_casualties
+    FROM with_month_num wm
+    LEFT JOIN ship s  ON s.lost_in_battle    = wm.id
+    LEFT JOIN death d ON d.caused_by_ship_id = s.id
+    GROUP BY wm.id, wm.name, wm.date, wm.year, wm.month_num, wm.day
+)
+SELECT
+    battle_name,
+    battle_date,
+    total_casualties,
+    SUM(total_casualties) OVER (
+        ORDER BY year, month_num, day
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_casualties
+FROM casualties_per_battle
+ORDER BY year, month_num, day;","WITH valid_battles AS (
+    SELECT id, name, date
+    FROM battle
+    WHERE date(date) IS NOT NULL
+),
+battle_casualties AS (
+    SELECT vb.id, vb.date, COALESCE(SUM(d.killed + d.injured), 0) AS casualties
+    FROM valid_battles vb
+    LEFT JOIN ship s ON vb.id = s.lost_in_battle
+    LEFT JOIN death d ON s.id = d.caused_by_ship_id
+    GROUP BY vb.id, vb.date
+)
+SELECT id, date, casualties,
+       SUM(casualties) OVER (ORDER BY date(date), id) AS cumulative_casualties
+FROM battle_casualties
+ORDER BY date(date), id;","WITH BattleCasualties AS (
+  SELECT
+    T1.name AS battle_name,
+    T1.date AS battle_date,
+    SUM(COALESCE(T3.killed, 0) + COALESCE(T3.injured, 0)) AS total_casualties,
+    SUBSTR(T1.date, -4) || '-' ||
+    CASE
+      WHEN T1.date LIKE '%January%' THEN '01'
+      WHEN T1.date LIKE '%February%' THEN '02'
+      WHEN T1.date LIKE '%March%' THEN '03'
+      WHEN T1.date LIKE '%April%' THEN '04'
+      WHEN T1.date LIKE '%May%' THEN '05'
+      WHEN T1.date LIKE '%June%' THEN '06'
+      WHEN T1.date LIKE '%July%' THEN '07'
+      WHEN T1.date LIKE '%August%' THEN '08'
+      WHEN T1.date LIKE '%September%' THEN '09'
+      WHEN T1.date LIKE '%October%' THEN '10'
+      WHEN T1.date LIKE '%November%' THEN '11'
+      WHEN T1.date LIKE '%December%' THEN '12'
+    END || '-' ||
+    PRINTF('%02d', SUBSTR(T1.date, 1, INSTR(T1.date, ' ') - 1)) AS sortable_date
+  FROM battle AS T1
+  JOIN ship AS T2
+    ON T1.id = T2.lost_in_battle
+  JOIN death AS T3
+    ON T2.id = T3.caused_by_ship_id
+  WHERE
+    T1.date LIKE '_% _% %'
+  GROUP BY
+    T1.id,
+    T1.name,
+    T1.date
+)
+SELECT
+  T.battle_name,
+  T.battle_date,
+  SUM(T.total_casualties) OVER (ORDER BY T.sortable_date) AS cumulative_casualties
+FROM BattleCasualties AS T
+ORDER BY
+  T.sortable_date;","WITH clean_battle AS (
+    SELECT 
+        b.id, 
+        b.name, 
+        TRIM(b.date) AS clean_date
+    FROM battle AS b
+),
+valid_format AS (
+    SELECT 
+        cb.id, 
+        cb.name, 
+        cb.clean_date,
+        SUBSTR(cb.clean_date, 1, INSTR(cb.clean_date, ' ') - 1) AS day_str,
+        SUBSTR(cb.clean_date, INSTR(cb.clean_date, ' ') + 1) AS rest_str
+    FROM clean_battle AS cb
+    WHERE LENGTH(cb.clean_date) - LENGTH(REPLACE(cb.clean_date, ' ', '')) = 2
+),
+parsed_date AS (
+    SELECT 
+        vf.id, 
+        vf.name, 
+        vf.clean_date,
+        CASE 
+            WHEN LENGTH(vf.day_str) = 1 THEN '0' || vf.day_str 
+            ELSE vf.day_str 
+        END AS dd,
+        SUBSTR(vf.rest_str, 1, INSTR(vf.rest_str, ' ') - 1) AS m_str,
+        SUBSTR(vf.rest_str, INSTR(vf.rest_str, ' ') + 1) AS yyyy
+    FROM valid_format AS vf
+),
+mapped_date AS (
+    SELECT 
+        pd.id, 
+        pd.name,
+        pd.yyyy || '-' || 
+        CASE pd.m_str 
+            WHEN 'January' THEN '01' 
+            WHEN 'February' THEN '02' 
+            WHEN 'March' THEN '03' 
+            WHEN 'April' THEN '04' 
+            WHEN 'May' THEN '05' 
+            WHEN 'June' THEN '06' 
+            WHEN 'July' THEN '07' 
+            WHEN 'August' THEN '08' 
+            WHEN 'September' THEN '09' 
+            WHEN 'October' THEN '10' 
+            WHEN 'November' THEN '11' 
+            WHEN 'December' THEN '12' 
+        END || '-' || pd.dd AS valid_date
+    FROM parsed_date AS pd
+),
+filtered_battles AS (
+    SELECT 
+        md.id, 
+        md.name, 
+        md.valid_date
+    FROM mapped_date AS md
+    WHERE DATE(md.valid_date) IS NOT NULL
+),
+battle_stats AS (
+    SELECT 
+        fb.id,
+        fb.name,
+        fb.valid_date,
+        COALESCE(SUM(IFNULL(d.killed, 0) + IFNULL(d.injured, 0)), 0) AS casualties
+    FROM filtered_battles AS fb
+    LEFT JOIN ship AS s 
+        ON fb.id = s.lost_in_battle
+    LEFT JOIN death AS d 
+        ON s.id = d.caused_by_ship_id
+    GROUP BY 
+        fb.id, 
+        fb.name, 
+        fb.valid_date
+)
+SELECT 
+    bs.name,
+    bs.valid_date,
+    bs.casualties,
+    SUM(bs.casualties) OVER (ORDER BY bs.valid_date ASC, bs.name ASC) AS cumulative_casualties
+FROM battle_stats AS bs
+ORDER BY 
+    bs.valid_date ASC, 
+    bs.name ASC;"
+38,battle_death,L13,1/5,"WITH ordered AS (
+  SELECT id AS battle_id,
+         name AS battle_name,
+         date(date) AS battle_day,
+         LAG(date(date)) OVER (ORDER BY date(date), id) AS prev_day
+  FROM battle
+  WHERE date(date) IS NOT NULL
+)
+SELECT battle_id,
+       battle_name,
+       battle_day,
+       CAST(julianday(battle_day) - julianday(prev_day) AS REAL) AS days_since_prev
+FROM ordered
+WHERE prev_day IS NOT NULL
+ORDER BY battle_day, battle_id;","WITH parsed AS (
+    SELECT
+        id,
+        name,
+        date,
+        SUBSTR(date, 1, INSTR(date, ' ') - 1)  AS day_str,
+        SUBSTR(date, INSTR(date, ' ') + 1)      AS rest
+    FROM battle
+    WHERE INSTR(date, ' ') > 0
+      AND CAST(SUBSTR(date, 1, INSTR(date, ' ') - 1) AS INTEGER) > 0
+),
+with_month AS (
+    SELECT
+        id,
+        name,
+        date,
+        day_str,
+        SUBSTR(rest, 1, INSTR(rest, ' ') - 1)  AS month_name,
+        SUBSTR(rest, INSTR(rest, ' ') + 1)      AS year_str
+    FROM parsed
+    WHERE INSTR(rest, ' ') > 0
+),
+with_jd AS (
+    SELECT
+        id,
+        name,
+        date,
+        julianday(
+            year_str || '-' ||
+            CASE month_name
+                WHEN 'January'   THEN '01'
+                WHEN 'February'  THEN '02'
+                WHEN 'March'     THEN '03'
+                WHEN 'April'     THEN '04'
+                WHEN 'May'       THEN '05'
+                WHEN 'June'      THEN '06'
+                WHEN 'July'      THEN '07'
+                WHEN 'August'    THEN '08'
+                WHEN 'September' THEN '09'
+                WHEN 'October'   THEN '10'
+                WHEN 'November'  THEN '11'
+                WHEN 'December'  THEN '12'
+                ELSE NULL
+            END || '-' ||
+            PRINTF('%02d', CAST(day_str AS INTEGER))
+        ) AS jd
+    FROM with_month
+),
+with_lag AS (
+    SELECT
+        id,
+        name,
+        date,
+        jd,
+        LAG(jd) OVER (ORDER BY jd) AS prev_jd
+    FROM with_jd
+    WHERE jd IS NOT NULL
+)
+SELECT
+    id                                              AS battle_id,
+    name                                            AS battle_name,
+    date                                            AS battle_date,
+    CAST(jd - prev_jd AS INTEGER)                  AS days_since_previous_battle
+FROM with_lag
+ORDER BY jd;","WITH battle_dates AS (
+  SELECT 
+    b.id,
+    b.name,
+    b.date AS original_date,
+    substr(b.date, 1, instr(b.date, ' ') - 1) AS day_str,
+    trim(substr(b.date, instr(b.date, ' ') + 1)) AS month_year,
+    substr(month_year, 1, instr(month_year || ' ', ' ') - 1) AS month_str,
+    trim(substr(month_year, instr(month_year, ' ') + 1)) AS year_str
+  FROM battle b
+  WHERE b.date LIKE '% % %'
+    AND b.date GLOB '[0-9]*'
+), 
+converted AS (
+  SELECT 
+    id,
+    name,
+    original_date,
+    CASE lower(month_str)
+      WHEN 'january' THEN '01'
+      WHEN 'february' THEN '02'
+      WHEN 'march' THEN '03'
+      WHEN 'april' THEN '04'
+      WHEN 'may' THEN '05'
+      WHEN 'june' THEN '06'
+      WHEN 'july' THEN '07'
+      WHEN 'august' THEN '08'
+      WHEN 'september' THEN '09'
+      WHEN 'october' THEN '10'
+      WHEN 'november' THEN '11'
+      WHEN 'december' THEN '12'
+      ELSE NULL
+    END AS month_num,
+    year_str,
+    day_str
+  FROM battle_dates
+  WHERE month_num IS NOT NULL
+    AND year_str GLOB '[0-9]*'
+    AND day_str GLOB '[0-9]*'
+),
+valid_dates AS (
+  SELECT 
+    id,
+    name,
+    original_date,
+    date(year_str || '-' || month_num || '-' || substr('0' || day_str, -2)) AS battle_date
+  FROM converted
+  WHERE date(year_str || '-' || month_num || '-' || substr('0' || day_str, -2)) IS NOT NULL
+)
+SELECT 
+  name,
+  original_date,
+  battle_date,
+  julianday(battle_date) - julianday(lag(battle_date) OVER (ORDER BY battle_date)) AS days_diff
+FROM valid_dates
+ORDER BY battle_date;","WITH BattleWithParsedDate AS (
+  SELECT
+    name,
+    date AS original_date,
+    date(date) AS parsed_date
+  FROM battle
+  WHERE
+    date(date) IS NOT NULL
+), BattleWithLagDate AS (
+  SELECT
+    name,
+    original_date,
+    parsed_date,
+    LAG(parsed_date, 1) OVER (
+      ORDER BY
+        parsed_date
+    ) AS previous_battle_date
+  FROM BattleWithParsedDate
+)
+SELECT
+  name,
+  original_date,
+  CAST(julianday(parsed_date) - julianday(previous_battle_date) AS INTEGER) AS days_since_previous_battle
+FROM BattleWithLagDate
+ORDER BY
+  parsed_date;","WITH parsed AS (
+    SELECT 
+        battle.id,
+        battle.name,
+        substr(trim(battle.date), -4) AS y,
+        CASE 
+            WHEN battle.date LIKE '%January%' THEN '01'
+            WHEN battle.date LIKE '%February%' THEN '02'
+            WHEN battle.date LIKE '%March%' THEN '03'
+            WHEN battle.date LIKE '%April%' THEN '04'
+            WHEN battle.date LIKE '%May%' THEN '05'
+            WHEN battle.date LIKE '%June%' THEN '06'
+            WHEN battle.date LIKE '%July%' THEN '07'
+            WHEN battle.date LIKE '%August%' THEN '08'
+            WHEN battle.date LIKE '%September%' THEN '09'
+            WHEN battle.date LIKE '%October%' THEN '10'
+            WHEN battle.date LIKE '%November%' THEN '11'
+            WHEN battle.date LIKE '%December%' THEN '12'
+        END AS m,
+        CAST(substr(trim(battle.date), 1, instr(trim(battle.date), ' ') - 1) AS INT) AS d
+    FROM battle
+),
+valid_dates AS (
+    SELECT 
+        parsed.id,
+        parsed.name,
+        parsed.y || '-' || parsed.m || '-' || CASE WHEN parsed.d < 10 THEN '0' || CAST(parsed.d AS TEXT) ELSE CAST(parsed.d AS TEXT) END AS parsed_date
+    FROM parsed
+    WHERE parsed.d > 0 AND parsed.m IS NOT NULL
+),
+ordered_dates AS (
+    SELECT 
+        valid_dates.name,
+        valid_dates.parsed_date,
+        LAG(valid_dates.parsed_date) OVER (ORDER BY valid_dates.parsed_date ASC, valid_dates.id ASC) AS prev_date
+    FROM valid_dates
+)
+SELECT 
+    ordered_dates.name,
+    CAST(julianday(ordered_dates.parsed_date) - julianday(ordered_dates.prev_date) AS INT) AS days_difference
+FROM ordered_dates;"
+44,battle_death,L13,1/5,"WITH ordered AS (
+  SELECT id,
+         name,
+         date(date) AS battle_day,
+         bulgarian_commander,
+         LAG(bulgarian_commander) OVER (ORDER BY date(date), id) AS prev_commander
+  FROM battle
+  WHERE date(date) IS NOT NULL
+)
+SELECT id AS battle_id,
+       name AS battle_name,
+       battle_day,
+       bulgarian_commander
+FROM ordered
+WHERE prev_commander IS NOT NULL
+  AND bulgarian_commander <> prev_commander
+ORDER BY battle_day, id;","WITH ordered_battles AS (
+    SELECT
+        b.id,
+        b.name,
+        b.date,
+        b.bulgarian_commander,
+        CAST(SUBSTR(b.date, -4) AS INT) AS year_num,
+        CASE
+            WHEN b.date LIKE '%January%'   THEN 1
+            WHEN b.date LIKE '%February%'  THEN 2
+            WHEN b.date LIKE '%March%'     THEN 3
+            WHEN b.date LIKE '%April%'     THEN 4
+            WHEN b.date LIKE '%May%'       THEN 5
+            WHEN b.date LIKE '%June%'      THEN 6
+            WHEN b.date LIKE '%July%'      THEN 7
+            WHEN b.date LIKE '%August%'    THEN 8
+            WHEN b.date LIKE '%September%' THEN 9
+            WHEN b.date LIKE '%October%'   THEN 10
+            WHEN b.date LIKE '%November%'  THEN 11
+            WHEN b.date LIKE '%December%'  THEN 12
+            ELSE 0
+        END AS month_num
+    FROM battle b
+    WHERE b.date IS NOT NULL
+      AND CAST(SUBSTR(b.date, -4) AS INT) > 0
+),
+with_lag AS (
+    SELECT
+        ob.id,
+        ob.name,
+        ob.date,
+        ob.bulgarian_commander,
+        ob.year_num,
+        ob.month_num,
+        LAG(ob.bulgarian_commander) OVER (
+            ORDER BY ob.year_num, ob.month_num, ob.id
+        ) AS prev_bulgarian_commander
+    FROM ordered_battles ob
+)
+SELECT
+    wl.id,
+    wl.name,
+    wl.date,
+    wl.bulgarian_commander
+FROM with_lag wl
+WHERE wl.prev_bulgarian_commander IS NOT NULL
+  AND wl.bulgarian_commander != wl.prev_bulgarian_commander
+ORDER BY wl.year_num, wl.month_num, wl.id","WITH battle_parsed AS (
+  SELECT 
+    b.id,
+    b.name,
+    b.date,
+    b.bulgarian_commander,
+    b.latin_commander,
+    b.result,
+    -- Extract year: 4 digits at the end
+    CAST(substr(b.date, length(b.date) - 3, 4) AS INTEGER) AS year,
+    -- Extract month name: between first and last space, or whole string if only one space
+    CASE 
+      WHEN instr(b.date, ' ') > 0 THEN
+        trim(substr(b.date, instr(b.date, ' ') + 1, 
+                    CASE 
+                      WHEN instr(substr(b.date, instr(b.date, ' ') + 1), ' ') > 0 
+                      THEN instr(substr(b.date, instr(b.date, ' ') + 1), ' ')
+                      ELSE length(b.date)
+                    END))
+      ELSE NULL
+    END AS month_name,
+    -- Extract day: first part if it's a number, otherwise default to 1
+    CASE 
+      WHEN substr(b.date, 1, instr(b.date, ' ') - 1) GLOB '[0-9]*' 
+      THEN CAST(substr(b.date, 1, instr(b.date, ' ') - 1) AS INTEGER)
+      ELSE 1
+    END AS day
+  FROM battle b
+  WHERE b.date IS NOT NULL
+),
+battle_with_month_num AS (
+  SELECT 
+    *,
+    CASE lower(month_name)
+      WHEN 'january' THEN 1
+      WHEN 'february' THEN 2
+      WHEN 'march' THEN 3
+      WHEN 'april' THEN 4
+      WHEN 'may' THEN 5
+      WHEN 'june' THEN 6
+      WHEN 'july' THEN 7
+      WHEN 'august' THEN 8
+      WHEN 'september' THEN 9
+      WHEN 'october' THEN 10
+      WHEN 'november' THEN 11
+      WHEN 'december' THEN 12
+      ELSE NULL
+    END AS month_num
+  FROM battle_parsed
+  WHERE month_name IS NOT NULL AND year IS NOT NULL
+),
+battle_valid AS (
+  SELECT *
+  FROM battle_with_month_num
+  WHERE month_num IS NOT NULL
+),
+battle_with_lag AS (
+  SELECT 
+    *,
+    LAG(bulgarian_commander) OVER (ORDER BY year, month_num, day) AS prev_bulgarian_commander
+  FROM battle_valid
+)
+SELECT 
+  id,
+  name,
+  date,
+  bulgarian_commander,
+  latin_commander,
+  result
+FROM battle_with_lag
+WHERE bulgarian_commander != prev_bulgarian_commander 
+  AND prev_bulgarian_commander IS NOT NULL
+ORDER BY year, month_num, day;","WITH BattleWithPreviousCommander AS (
+  SELECT
+    T1.name,
+    T1.bulgarian_commander,
+    LAG(T1.bulgarian_commander, 1) OVER (
+      ORDER BY
+        SUBSTR(T1.date, -4),
+        CASE
+          WHEN T1.date LIKE '%Jan%' THEN 1
+          WHEN T1.date LIKE '%Feb%' THEN 2
+          WHEN T1.date LIKE '%Mar%' THEN 3
+          WHEN T1.date LIKE '%Apr%' THEN 4
+          WHEN T1.date LIKE '%May%' THEN 5
+          WHEN T1.date LIKE '%Jun%' THEN 6
+          WHEN T1.date LIKE '%Jul%' THEN 7
+          WHEN T1.date LIKE '%Aug%' THEN 8
+          WHEN T1.date LIKE '%Sep%' THEN 9
+          WHEN T1.date LIKE '%Oct%' THEN 10
+          WHEN T1.date LIKE '%Nov%' THEN 11
+          WHEN T1.date LIKE '%Dec%' THEN 12
+        END,
+        CAST(SUBSTR(T1.date, 1, 2) AS INTEGER)
+    ) AS previous_commander
+  FROM battle AS T1
+  WHERE
+    CASE
+      WHEN T1.date LIKE '%Jan%' THEN 1
+      WHEN T1.date LIKE '%Feb%' THEN 2
+      WHEN T1.date LIKE '%Mar%' THEN 3
+      WHEN T1.date LIKE '%Apr%' THEN 4
+      WHEN T1.date LIKE '%May%' THEN 5
+      WHEN T1.date LIKE '%Jun%' THEN 6
+      WHEN T1.date LIKE '%Jul%' THEN 7
+      WHEN T1.date LIKE '%Aug%' THEN 8
+      WHEN T1.date LIKE '%Sep%' THEN 9
+      WHEN T1.date LIKE '%Oct%' THEN 10
+      WHEN T1.date LIKE '%Nov%' THEN 11
+      WHEN T1.date LIKE '%Dec%' THEN 12
+    END IS NOT NULL
+)
+SELECT
+  T2.name
+FROM BattleWithPreviousCommander AS T2
+WHERE
+  T2.bulgarian_commander != T2.previous_commander;","WITH ParsedBattles AS (
+    SELECT 
+        b.name,
+        b.bulgarian_commander,
+        CAST(SUBSTR(b.date, -4) AS INTEGER) AS year_part,
+        CASE 
+            WHEN b.date LIKE '%January%' THEN 1
+            WHEN b.date LIKE '%February%' THEN 2
+            WHEN b.date LIKE '%March%' THEN 3
+            WHEN b.date LIKE '%April%' THEN 4
+            WHEN b.date LIKE '%May%' THEN 5
+            WHEN b.date LIKE '%June%' THEN 6
+            WHEN b.date LIKE '%July%' THEN 7
+            WHEN b.date LIKE '%August%' THEN 8
+            WHEN b.date LIKE '%September%' THEN 9
+            WHEN b.date LIKE '%October%' THEN 10
+            WHEN b.date LIKE '%November%' THEN 11
+            WHEN b.date LIKE '%December%' THEN 12
+            ELSE 0
+        END AS month_part,
+        CASE 
+            WHEN CAST(b.date AS INTEGER) > 0 THEN CAST(b.date AS INTEGER) 
+            ELSE 0 
+        END AS day_part
+    FROM battle AS b
+    WHERE CAST(SUBSTR(b.date, -4) AS INTEGER) > 0
+),
+OrderedBattles AS (
+    SELECT 
+        pb.name,
+        pb.bulgarian_commander,
+        LAG(pb.bulgarian_commander) OVER (ORDER BY pb.year_part, pb.month_part, pb.day_part) AS prev_commander
+    FROM ParsedBattles AS pb
+)
+SELECT ob.name
+FROM OrderedBattles AS ob
+WHERE ob.bulgarian_commander != ob.prev_commander;"
+147,aircraft,L8,1/5,"WITH cnt AS (SELECT ac.Aircraft_ID, ac.Aircraft, COUNT(DISTINCT aa.Airport_ID) AS airport_count FROM aircraft ac LEFT JOIN airport_aircraft aa ON aa.Aircraft_ID = ac.Aircraft_ID GROUP BY ac.Aircraft_ID) SELECT Aircraft, airport_count, CASE WHEN airport_count >= 2 THEN 'phổ biến' ELSE 'ít gặp' END AS popularity_label FROM cnt ORDER BY airport_count DESC, Aircraft;","WITH airport_count_per_aircraft AS (
+    SELECT
+        ac.Aircraft_ID,
+        ac.Aircraft,
+        COUNT(DISTINCT aa.Airport_ID) AS airport_count
+    FROM aircraft ac
+    LEFT JOIN airport_aircraft aa ON ac.Aircraft_ID = aa.Aircraft_ID
+    GROUP BY ac.Aircraft_ID, ac.Aircraft
+)
+SELECT
+    Aircraft_ID,
+    Aircraft,
+    airport_count,
+    CASE
+        WHEN airport_count >= 2 THEN 'phổ biến'
+        ELSE 'không phổ biến'
+    END AS nhan
+FROM airport_count_per_aircraft
+ORDER BY airport_count DESC","WITH AircraftAirportCount AS (
+    SELECT 
+        a.Aircraft_ID,
+        a.Aircraft,
+        COUNT(DISTINCT aa.Airport_ID) AS airport_count
+    FROM aircraft a
+    LEFT JOIN airport_aircraft aa ON a.Aircraft_ID = aa.Aircraft_ID
+    GROUP BY a.Aircraft_ID, a.Aircraft
+)
+SELECT 
+    Aircraft_ID,
+    Aircraft,
+    airport_count,
+    CASE 
+        WHEN airport_count >= 2 THEN 'phổ biến' 
+        ELSE '' 
+    END AS label
+FROM AircraftAirportCount
+ORDER BY Aircraft_ID;","SELECT
+  T1.Aircraft,
+  COUNT(T2.Airport_ID) AS SoLuongSanBay,
+  CASE
+    WHEN COUNT(T2.Airport_ID) >= 2
+    THEN 'phổ biến'
+  END AS NhanPhoBien
+FROM aircraft AS T1
+LEFT JOIN airport_aircraft AS T2
+  ON T1.Aircraft_ID = T2.Aircraft_ID
+GROUP BY
+  T1.Aircraft_ID
+ORDER BY
+  T1.Aircraft;","SELECT 
+    T1.Aircraft, 
+    COUNT(T2.Airport_ID), 
+    CASE 
+        WHEN COUNT(T2.Airport_ID) >= 2 THEN 'phổ biến' 
+        ELSE 'không phổ biến' 
+    END 
+FROM aircraft AS T1 
+JOIN airport_aircraft AS T2 
+    ON T1.Aircraft_ID = T2.Aircraft_ID 
+GROUP BY 
+    T1.Aircraft;"
+170,assets_maintenance,L6,1/5,"SELECT fl.fault_log_entry_id,
+       fl.fault_description,
+       GROUP_CONCAT(pf.fault_short_name, ', ') AS part_fault_short_names
+FROM Fault_Log fl
+LEFT JOIN Fault_Log_Parts flp ON flp.fault_log_entry_id = fl.fault_log_entry_id
+LEFT JOIN Part_Faults pf ON pf.part_fault_id = flp.part_fault_id
+GROUP BY fl.fault_log_entry_id, fl.fault_description
+ORDER BY fl.fault_log_entry_id;","SELECT
+    fl.fault_log_entry_id,
+    fl.fault_log_entry_datetime,
+    fl.fault_description,
+    COALESCE(GROUP_CONCAT(pf.fault_short_name, ', '), '') AS fault_short_names
+FROM Fault_Log fl
+LEFT JOIN Fault_Log_Parts flp
+    ON fl.fault_log_entry_id = flp.fault_log_entry_id
+LEFT JOIN Part_Faults pf
+    ON flp.part_fault_id = pf.part_fault_id
+GROUP BY
+    fl.fault_log_entry_id,
+    fl.fault_log_entry_datetime,
+    fl.fault_description
+ORDER BY fl.fault_log_entry_id","SELECT
+    FL.fault_log_entry_id,
+    FL.asset_id,
+    FL.recorded_by_staff_id,
+    FL.fault_log_entry_datetime,
+    FL.fault_description,
+    FL.other_fault_details,
+    GROUP_CONCAT(DISTINCT PF.fault_short_name) AS related_part_fault_short_names
+FROM Fault_Log FL
+LEFT JOIN Fault_Log_Parts FLP ON FL.fault_log_entry_id = FLP.fault_log_entry_id
+LEFT JOIN Part_Faults PF ON FLP.part_fault_id = PF.part_fault_id
+GROUP BY FL.fault_log_entry_id
+ORDER BY FL.fault_log_entry_id;","SELECT
+  T1.fault_log_entry_id,
+  T1.asset_id,
+  T1.fault_log_entry_datetime,
+  T1.fault_description,
+  T3.fault_short_name
+FROM Fault_Log AS T1
+LEFT JOIN Fault_Log_Parts AS T2
+  ON T1.fault_log_entry_id = T2.fault_log_entry_id
+LEFT JOIN Part_Faults AS T3
+  ON T2.part_fault_id = T3.part_fault_id
+ORDER BY
+  T1.fault_log_entry_id;","SELECT 
+    T1.fault_description, 
+    T3.fault_short_name 
+FROM Fault_Log AS T1 
+LEFT JOIN Fault_Log_Parts AS T2 
+    ON T1.fault_log_entry_id = T2.fault_log_entry_id 
+LEFT JOIN Part_Faults AS T3 
+    ON T2.part_fault_id = T3.part_fault_id;"
+183,assets_maintenance,L8,1/5,"WITH assets_per_contract AS (
+  SELECT maintenance_contract_id,
+         COUNT(*) AS asset_count
+  FROM Assets
+  GROUP BY maintenance_contract_id
+)
+SELECT c.company_id,
+       c.company_name,
+       COALESCE(SUM(apc.asset_count), 0) AS total_assets
+FROM Maintenance_Contracts mc
+JOIN Third_Party_Companies c ON c.company_id = mc.maintenance_contract_company_id
+LEFT JOIN assets_per_contract apc ON apc.maintenance_contract_id = mc.maintenance_contract_id
+GROUP BY c.company_id, c.company_name
+ORDER BY total_assets DESC, c.company_id;","SELECT
+    tpc.company_id,
+    tpc.company_name,
+    COUNT(a.asset_id) AS asset_count
+FROM Third_Party_Companies AS tpc
+LEFT JOIN Maintenance_Contracts AS mc
+    ON mc.maintenance_contract_company_id = tpc.company_id
+LEFT JOIN Assets AS a
+    ON a.maintenance_contract_id = mc.maintenance_contract_id
+GROUP BY
+    tpc.company_id,
+    tpc.company_name
+ORDER BY
+    tpc.company_id","SELECT 
+    tpc.company_id,
+    tpc.company_name,
+    COUNT(DISTINCT a.asset_id) AS asset_count
+FROM Third_Party_Companies tpc
+LEFT JOIN Maintenance_Contracts mc ON tpc.company_id = mc.maintenance_contract_company_id
+LEFT JOIN Assets a ON mc.maintenance_contract_id = a.maintenance_contract_id
+WHERE tpc.company_type = 'Maintenance Contractor'
+GROUP BY tpc.company_id, tpc.company_name
+ORDER BY tpc.company_id;","SELECT
+  T1.company_name,
+  COUNT(T3.asset_id) AS so_luong_tai_san
+FROM Third_Party_Companies AS T1
+JOIN Maintenance_Contracts AS T2
+  ON T1.company_id = T2.maintenance_contract_company_id
+JOIN Assets AS T3
+  ON T2.maintenance_contract_id = T3.maintenance_contract_id
+WHERE
+  T1.company_type = 'Maintenance Contractor'
+GROUP BY
+  T1.company_name
+ORDER BY
+  so_luong_tai_san DESC;","SELECT T1.company_name,
+       COUNT(T3.asset_id)
+FROM Third_Party_Companies AS T1
+JOIN Maintenance_Contracts AS T2
+  ON T1.company_id = T2.maintenance_contract_company_id
+JOIN Assets AS T3
+  ON T2.maintenance_contract_id = T3.maintenance_contract_id
+GROUP BY T1.company_id,
+         T1.company_name;"
+193,assets_maintenance,L10,1/4,"SELECT me.engineer_id,
+       (me.first_name || ' ' || me.last_name) AS engineer_full_name,
+       COUNT(ev.engineer_visit_id) AS visit_count,
+       CASE
+         WHEN COUNT(ev.engineer_visit_id) > (
+           SELECT AVG(cnt)
+           FROM (
+             SELECT COUNT(*) AS cnt
+             FROM Engineer_Visits
+             GROUP BY engineer_id
+           )
+         ) THEN 'Above average'
+         ELSE 'Not above average'
+       END AS comparison_to_average
+FROM Maintenance_Engineers me
+LEFT JOIN Engineer_Visits ev ON ev.engineer_id = me.engineer_id
+GROUP BY me.engineer_id, engineer_full_name
+ORDER BY visit_count DESC, me.engineer_id;",,"WITH engineer_visits_count AS (
+    SELECT 
+        E.engineer_id,
+        COUNT(V.engineer_visit_id) AS visit_count
+    FROM Maintenance_Engineers E
+    LEFT JOIN Engineer_Visits V ON E.engineer_id = V.engineer_id
+    GROUP BY E.engineer_id
+)
+SELECT 
+    E.engineer_id,
+    E.first_name,
+    E.last_name,
+    COALESCE(V.visit_count, 0) AS visit_count,
+    CASE 
+        WHEN COALESCE(V.visit_count, 0) > (SELECT AVG(visit_count) FROM engineer_visits_count) THEN 'Above Average'
+        WHEN COALESCE(V.visit_count, 0) < (SELECT AVG(visit_count) FROM engineer_visits_count) THEN 'Below Average'
+        ELSE 'Equal to Average'
+    END AS comparison
+FROM Maintenance_Engineers E
+LEFT JOIN engineer_visits_count V ON E.engineer_id = V.engineer_id
+ORDER BY E.engineer_id;","WITH EngineerVisitCounts AS (
+  SELECT
+    T1.engineer_id,
+    COUNT(T1.engineer_visit_id) AS number_of_visits
+  FROM Engineer_Visits AS T1
+  GROUP BY
+    T1.engineer_id
+)
+SELECT
+  T2.first_name,
+  T2.last_name,
+  COALESCE(T3.number_of_visits, 0) AS so_luot_den,
+  CASE
+    WHEN COALESCE(T3.number_of_visits, 0) > (
+      SELECT
+        AVG(T4.number_of_visits)
+      FROM EngineerVisitCounts AS T4
+    )
+    THEN 'Nhiều hơn trung bình'
+    WHEN COALESCE(T3.number_of_visits, 0) < (
+      SELECT
+        AVG(T4.number_of_visits)
+      FROM EngineerVisitCounts AS T4
+    )
+    THEN 'Ít hơn trung bình'
+    ELSE 'Bằng trung bình'
+  END AS so_sanh_voi_trung_binh
+FROM Maintenance_Engineers AS T2
+LEFT JOIN EngineerVisitCounts AS T3
+  ON T2.engineer_id = T3.engineer_id;","SELECT T1.engineer_id,
+       CASE
+           WHEN COUNT(T1.engineer_visit_id) > (SELECT AVG(T.visit_count) FROM (SELECT COUNT(T2.engineer_visit_id) AS visit_count FROM Engineer_Visits AS T2 GROUP BY T2.engineer_id) AS T) THEN 'yes'
+           ELSE 'no'
+       END
+FROM Engineer_Visits AS T1
+GROUP BY T1.engineer_id"
+203,assets_maintenance,L12,1/4,"SELECT company_id,
+       company_name,
+       asset_id,
+       asset_details,
+       asset_acquired_date
+FROM (
+  SELECT c.company_id,
+         c.company_name,
+         a.asset_id,
+         a.asset_details,
+         a.asset_acquired_date,
+         ROW_NUMBER() OVER (
+           PARTITION BY c.company_id
+           ORDER BY a.asset_acquired_date
+         ) AS rn
+  FROM Third_Party_Companies c
+  JOIN Assets a ON a.supplier_company_id = c.company_id
+  WHERE c.company_type = 'Supplier'
+)
+WHERE rn = 1
+ORDER BY company_id;",,"WITH RankedAssets AS (
+    SELECT
+        C.company_id,
+        C.company_name,
+        A.asset_id,
+        A.asset_details,
+        A.asset_acquired_date,
+        ROW_NUMBER() OVER (PARTITION BY A.supplier_company_id ORDER BY A.asset_acquired_date, A.asset_id) AS rn
+    FROM Assets A
+    JOIN Third_Party_Companies C ON A.supplier_company_id = C.company_id
+)
+SELECT
+    company_id,
+    company_name,
+    asset_id,
+    asset_details,
+    asset_acquired_date
+FROM RankedAssets
+WHERE rn = 1;","WITH RankedAssets AS (
+  SELECT
+    T2.company_name,
+    T1.asset_details,
+    T1.asset_acquired_date,
+    ROW_NUMBER() OVER (PARTITION BY T1.supplier_company_id ORDER BY T1.asset_acquired_date ASC) AS rn
+  FROM Assets AS T1
+  JOIN Third_Party_Companies AS T2
+    ON T1.supplier_company_id = T2.company_id
+  WHERE
+    T2.company_type = 'Supplier'
+)
+SELECT
+  company_name,
+  asset_details,
+  asset_acquired_date
+FROM RankedAssets
+WHERE
+  rn = 1
+ORDER BY
+  company_name;","SELECT
+  asset_id
+FROM Assets
+GROUP BY
+  supplier_company_id
+HAVING
+  MIN(asset_acquired_date);"
+206,assets_maintenance,L13,1/4,"WITH ordered_faults AS (
+  SELECT fault_log_entry_id,
+         asset_id,
+         fault_log_entry_datetime,
+         LAG(fault_log_entry_datetime) OVER (
+           PARTITION BY asset_id
+           ORDER BY fault_log_entry_datetime
+         ) AS prev_time
+  FROM Fault_Log
+)
+SELECT fault_log_entry_id,
+       asset_id,
+       fault_log_entry_datetime,
+       CAST(julianday(fault_log_entry_datetime) - julianday(prev_time) AS REAL) AS days_since_prev
+FROM ordered_faults
+WHERE prev_time IS NOT NULL
+ORDER BY asset_id, fault_log_entry_datetime;",,"WITH fault_ordered AS (
+    SELECT 
+        fl.asset_id,
+        fl.fault_log_entry_id,
+        fl.fault_log_entry_datetime,
+        LAG(fl.fault_log_entry_datetime) OVER (PARTITION BY fl.asset_id ORDER BY fl.fault_log_entry_datetime) AS prev_datetime
+    FROM Fault_Log fl
+)
+SELECT 
+    fo.asset_id,
+    fo.fault_log_entry_id,
+    fo.fault_log_entry_datetime,
+    JULIANDAY(fo.fault_log_entry_datetime) - JULIANDAY(fo.prev_datetime) AS days_between
+FROM fault_ordered fo
+ORDER BY fo.asset_id, fo.fault_log_entry_datetime;","WITH FaultDatesWithLag AS (
+  SELECT
+    fl.asset_id,
+    fl.fault_log_entry_datetime,
+    LAG(fl.fault_log_entry_datetime, 1) OVER (
+      PARTITION BY fl.asset_id
+      ORDER BY
+        fl.fault_log_entry_datetime
+    ) AS previous_fault_datetime
+  FROM Fault_Log AS fl
+)
+SELECT
+  T1.asset_id,
+  julianday(T1.fault_log_entry_datetime) - julianday(T1.previous_fault_datetime) AS days_between_faults
+FROM FaultDatesWithLag AS T1
+ORDER BY
+  T1.asset_id,
+  T1.fault_log_entry_datetime;","SELECT T1.asset_id,
+       julianday(T1.fault_log_entry_datetime) - julianday(T2.fault_log_entry_datetime)
+FROM Fault_Log AS T1
+JOIN Fault_Log AS T2
+  ON T1.asset_id = T2.asset_id 
+ AND T1.fault_log_entry_id = T2.fault_log_entry_id + 1;"
+207,assets_maintenance,L13,1/4,"SELECT ev.engineer_visit_id,
+       (me.first_name || ' ' || me.last_name) AS engineer_full_name,
+       CAST(julianday(ev.visit_end_datetime) - julianday(ev.visit_start_datetime) AS REAL) AS duration_days
+FROM Engineer_Visits ev
+JOIN Maintenance_Engineers me ON me.engineer_id = ev.engineer_id
+ORDER BY duration_days DESC, ev.engineer_visit_id;",,"WITH Engineer_Work_Days AS (
+    SELECT 
+        ev.engineer_visit_id,
+        ev.engineer_id,
+        me.first_name,
+        me.last_name,
+        ev.visit_start_datetime,
+        ev.visit_end_datetime,
+        julianday(ev.visit_end_datetime) - julianday(ev.visit_start_datetime) AS working_days
+    FROM Engineer_Visits ev
+    JOIN Maintenance_Engineers me ON ev.engineer_id = me.engineer_id
+)
+SELECT 
+    engineer_visit_id,
+    engineer_id,
+    first_name,
+    last_name,
+    visit_start_datetime,
+    visit_end_datetime,
+    working_days
+FROM Engineer_Work_Days
+ORDER BY engineer_visit_id;","SELECT
+  T1.first_name,
+  T1.last_name,
+  T2.engineer_visit_id,
+  julianday(T2.visit_end_datetime) - julianday(T2.visit_start_datetime) AS so_ngay_lam_viec
+FROM Maintenance_Engineers AS T1
+JOIN Engineer_Visits AS T2
+  ON T1.engineer_id = T2.engineer_id
+ORDER BY
+  T1.first_name,
+  T1.last_name,
+  T2.engineer_visit_id;","SELECT 
+    engineer_id, 
+    julianday(visit_end_datetime) - julianday(visit_start_datetime)
+FROM Engineer_Visits;"
+210,assets_maintenance,L15,1/4,"WITH supplier_assets AS (
+  SELECT c.company_id,
+         c.company_name,
+         a.asset_id,
+         a.other_asset_details
+  FROM Third_Party_Companies c
+  JOIN Assets a ON a.supplier_company_id = c.company_id
+  WHERE c.company_type = 'Supplier'
+),
+asset_faults AS (
+  SELECT sa.company_id,
+         sa.asset_id,
+         COUNT(fl.fault_log_entry_id) AS fault_cnt
+  FROM supplier_assets sa
+  LEFT JOIN Fault_Log fl ON fl.asset_id = sa.asset_id
+  GROUP BY sa.company_id, sa.asset_id
+),
+company_rollup AS (
+  SELECT sa.company_id,
+         sa.company_name,
+         COUNT(DISTINCT sa.asset_id) AS total_assets,
+         SUM(CASE WHEN sa.other_asset_details = 'Bad condition' THEN 1 ELSE 0 END) AS bad_assets,
+         SUM(af.fault_cnt) AS total_faults
+  FROM supplier_assets sa
+  JOIN asset_faults af ON af.company_id = sa.company_id AND af.asset_id = sa.asset_id
+  GROUP BY sa.company_id, sa.company_name
+)
+SELECT company_id,
+       company_name,
+       total_assets,
+       bad_assets,
+       total_faults,
+       (CAST(bad_assets AS REAL) / NULLIF(total_assets, 0)) * 100.0 + CAST(total_faults AS REAL) AS risk_score,
+       DENSE_RANK() OVER (ORDER BY ((CAST(bad_assets AS REAL) / NULLIF(total_assets, 0)) * 100.0 + CAST(total_faults AS REAL)) DESC) AS risk_rank
+FROM company_rollup
+ORDER BY risk_rank, company_id;",,"WITH CompanyStats AS (
+    SELECT 
+        C.company_id,
+        C.company_name,
+        COUNT(DISTINCT A.asset_id) AS total_assets,
+        COUNT(DISTINCT CASE WHEN A.other_asset_details IS NOT NULL AND A.other_asset_details <> '' AND A.other_asset_details <> 'None' THEN A.asset_id END) AS bad_assets_count,
+        COUNT(DISTINCT F.fault_log_entry_id) AS total_faults
+    FROM Third_Party_Companies C
+    LEFT JOIN Assets A ON C.company_id = A.supplier_company_id
+    LEFT JOIN Fault_Log F ON A.asset_id = F.asset_id
+    WHERE C.company_type = 'Supplier'
+    GROUP BY C.company_id, C.company_name
+)
+SELECT 
+    company_id,
+    company_name,
+    total_assets,
+    bad_assets_count,
+    total_faults,
+    CASE WHEN total_assets > 0 THEN 1.0 * bad_assets_count / total_assets ELSE 0 END AS bad_asset_ratio,
+    (CASE WHEN total_assets > 0 THEN 1.0 * bad_assets_count / total_assets ELSE 0 END) * total_faults AS risk_score
+FROM CompanyStats
+ORDER BY risk_score DESC;","WITH SupplierAssetStats AS (
+  SELECT
+    tpc.company_id,
+    tpc.company_name,
+    COUNT(a.asset_id) AS total_assets,
+    SUM(CASE WHEN a.other_asset_details = 'Bad condition' THEN 1 ELSE 0 END) AS bad_condition_assets
+  FROM Third_Party_Companies AS tpc
+  JOIN Assets AS a
+    ON tpc.company_id = a.supplier_company_id
+  WHERE
+    tpc.company_type = 'Supplier'
+  GROUP BY
+    tpc.company_id,
+    tpc.company_name
+), SupplierFaultCounts AS (
+  SELECT
+    tpc.company_id,
+    COUNT(fl.fault_log_entry_id) AS total_faults
+  FROM Third_Party_Companies AS tpc
+  JOIN Assets AS a
+    ON tpc.company_id = a.supplier_company_id
+  JOIN Fault_Log AS fl
+    ON a.asset_id = fl.asset_id
+  WHERE
+    tpc.company_type = 'Supplier'
+  GROUP BY
+    tpc.company_id
+)
+SELECT
+  sas.company_name,
+  (CAST(sas.bad_condition_assets AS REAL) / sas.total_assets) + COALESCE(sfc.total_faults, 0) AS risk_score
+FROM SupplierAssetStats AS sas
+LEFT JOIN SupplierFaultCounts AS sfc
+  ON sas.company_id = sfc.company_id
+ORDER BY
+  risk_score DESC;","SELECT
+    T.company_name,
+    (CAST(COUNT(DISTINCT CASE WHEN A.other_asset_details = 'Bad condition' THEN A.asset_id END) AS REAL) / COUNT(DISTINCT A.asset_id)) * COUNT(F.fault_log_entry_id) AS risk_score
+FROM Third_Party_Companies AS T
+JOIN Assets AS A ON T.company_id = A.supplier_company_id
+LEFT JOIN Fault_Log AS F ON A.asset_id = F.asset_id
+GROUP BY T.company_id, T.company_name
+ORDER BY risk_score DESC;"
+215,assets_maintenance,L6,1/4,"SELECT c.company_id,
+       c.company_name,
+       GROUP_CONCAT(me.first_name || ' ' || me.last_name, ', ') AS engineers
+FROM Third_Party_Companies c
+JOIN Maintenance_Engineers me ON me.company_id = c.company_id
+GROUP BY c.company_id, c.company_name
+ORDER BY c.company_id;",,"SELECT 
+    c.company_id,
+    c.company_name,
+    group_concat(e.first_name || ' ' || e.last_name) AS engineer_names
+FROM Third_Party_Companies c
+JOIN Maintenance_Engineers e ON c.company_id = e.company_id
+WHERE c.company_type = 'Maintenance Contractor'
+GROUP BY c.company_id, c.company_name
+ORDER BY c.company_name;","SELECT
+  T1.company_name,
+  GROUP_CONCAT(T2.first_name || ' ' || T2.last_name, ', ')
+FROM Third_Party_Companies AS T1
+JOIN Maintenance_Engineers AS T2
+  ON T1.company_id = T2.company_id
+WHERE
+  T1.company_type = 'Maintenance Contractor'
+GROUP BY
+  T1.company_name
+ORDER BY
+  T1.company_name;","SELECT 
+    T2.company_name, 
+    GROUP_CONCAT(T1.first_name)
+FROM Maintenance_Engineers AS T1
+JOIN Third_Party_Companies AS T2 
+    ON T1.company_id = T2.company_id
+GROUP BY 
+    T2.company_id;"
+224,assets_maintenance,L5,1/4,"SELECT c.company_id,
+       c.company_name,
+       COUNT(DISTINCT mc.maintenance_contract_id) AS contract_count,
+       COUNT(a.asset_id) AS total_assets
+FROM Maintenance_Contracts mc
+JOIN Third_Party_Companies c ON c.company_id = mc.maintenance_contract_company_id
+LEFT JOIN Assets a ON a.maintenance_contract_id = mc.maintenance_contract_id
+GROUP BY c.company_id, c.company_name
+ORDER BY contract_count DESC, total_assets DESC, c.company_id;",,"SELECT 
+   T.company_id,
+   T.company_name,
+   COUNT(DISTINCT MC.maintenance_contract_id) AS so_luong_hop_dong,
+   COUNT(DISTINCT A.asset_id) AS tong_so_tai_san
+FROM Third_Party_Companies T
+LEFT JOIN Maintenance_Contracts MC ON T.company_id = MC.maintenance_contract_company_id
+LEFT JOIN Assets A ON MC.maintenance_contract_id = A.maintenance_contract_id
+WHERE T.company_type = 'Maintenance Contractor'
+GROUP BY T.company_id, T.company_name
+ORDER BY T.company_id;","SELECT
+  T1.company_name,
+  COUNT(DISTINCT T2.maintenance_contract_id),
+  COUNT(DISTINCT T3.asset_id)
+FROM Third_Party_Companies AS T1
+LEFT JOIN Maintenance_Contracts AS T2
+  ON T1.company_id = T2.maintenance_contract_company_id
+LEFT JOIN Assets AS T3
+  ON T2.maintenance_contract_id = T3.maintenance_contract_id
+WHERE
+  T1.company_type = 'Maintenance Contractor'
+GROUP BY
+  T1.company_name
+ORDER BY
+  T1.company_name;","SELECT 
+    T1.company_name, 
+    COUNT(DISTINCT T2.maintenance_contract_id), 
+    COUNT(T3.asset_id)
+FROM Third_Party_Companies AS T1
+JOIN Maintenance_Contracts AS T2 
+    ON T1.company_id = T2.maintenance_contract_company_id
+JOIN Assets AS T3 
+    ON T2.maintenance_contract_id = T3.maintenance_contract_id
+GROUP BY 
+    T1.company_name;"
+243,behavior_monitoring,L5,1/4,"SELECT bi.incident_id,
+       rit.incident_type_description AS incident_type,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       a.city
+FROM Behavior_Incident bi
+JOIN Ref_Incident_Type rit ON rit.incident_type_code = bi.incident_type_code
+JOIN Students s ON s.student_id = bi.student_id
+JOIN Addresses a ON a.address_id = s.address_id
+ORDER BY bi.incident_id;",,"SELECT 
+    rit.incident_type_description AS incident_group_description,
+    TRIM(s.first_name || ' ' || COALESCE(s.middle_name || ' ', '') || s.last_name) AS full_name,
+    a.city
+FROM Behavior_Incident bi
+JOIN Ref_Incident_Type rit ON bi.incident_type_code = rit.incident_type_code
+JOIN Students s ON bi.student_id = s.student_id
+JOIN Addresses a ON s.address_id = a.address_id
+ORDER BY bi.incident_id;","SELECT
+  T3.incident_type_description,
+  T2.first_name || ' ' || T2.last_name AS student_name,
+  T4.city
+FROM Behavior_Incident AS T1
+INNER JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+INNER JOIN Ref_Incident_Type AS T3
+  ON T1.incident_type_code = T3.incident_type_code
+INNER JOIN Addresses AS T4
+  ON T2.address_id = T4.address_id;","SELECT 
+    rit.incident_type_description, 
+    s.first_name, 
+    s.last_name, 
+    a.city
+FROM Behavior_Incident AS bi
+JOIN Ref_Incident_Type AS rit 
+    ON bi.incident_type_code = rit.incident_type_code
+JOIN Students AS s 
+    ON bi.student_id = s.student_id
+JOIN Addresses AS a 
+    ON s.address_id = a.address_id;"
+245,behavior_monitoring,L5,1/4,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       COUNT(DISTINCT sid.detention_id) AS detention_count,
+       COUNT(DISTINCT sid.incident_id)  AS distinct_incident_count
+FROM Students s
+LEFT JOIN Students_in_Detention sid ON sid.student_id = s.student_id
+GROUP BY s.student_id, student_name
+ORDER BY detention_count DESC, distinct_incident_count DESC, s.student_id;",,"SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name,
+    COUNT(sid.detention_id) AS so_lan_detention,
+    COUNT(DISTINCT sid.incident_id) AS so_vu_viec_khac_nhau
+FROM Students s
+LEFT JOIN Students_in_Detention sid ON s.student_id = sid.student_id
+GROUP BY s.student_id, s.first_name, s.last_name
+ORDER BY s.student_id;","SELECT
+  T1.first_name,
+  T1.last_name,
+  COUNT(T2.detention_id) AS so_lan_ky_luat,
+  COUNT(DISTINCT T2.incident_id) AS so_vu_viec_khac_nhau
+FROM Students AS T1
+LEFT JOIN Students_in_Detention AS T2
+  ON T1.student_id = T2.student_id
+GROUP BY
+  T1.student_id,
+  T1.first_name,
+  T1.last_name
+ORDER BY
+  T1.last_name,
+  T1.first_name;","SELECT
+  student_id,
+  COUNT(detention_id),
+  COUNT(DISTINCT incident_id)
+FROM Students_in_Detention
+GROUP BY
+  student_id;"
+251,behavior_monitoring,L10,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       (
+         SELECT MAX(an.date_of_notes)
+         FROM Assessment_Notes an
+         WHERE an.student_id = s.student_id
+       ) AS latest_note_time
+FROM Students s
+ORDER BY s.student_id;",,"SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name,
+    MAX(n.date_of_notes) AS latest_note_date
+FROM Students s
+LEFT JOIN Assessment_Notes n ON s.student_id = n.student_id
+GROUP BY s.student_id, s.first_name, s.last_name
+ORDER BY s.student_id;","SELECT
+  T1.first_name,
+  T1.last_name,
+  MAX(T2.date_of_notes)
+FROM Students AS T1
+LEFT JOIN Assessment_Notes AS T2
+  ON T1.student_id = T2.student_id
+GROUP BY
+  T1.student_id
+ORDER BY
+  T1.student_id;",
+252,behavior_monitoring,L8,1/3,"WITH noted AS (
+  SELECT teacher_id,
+         student_id
+  FROM Assessment_Notes
+  WHERE student_id IS NOT NULL
+  GROUP BY teacher_id, student_id
+),
+detained_students AS (
+  SELECT DISTINCT student_id
+  FROM Students_in_Detention
+)
+SELECT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       COUNT(DISTINCT n.student_id) AS distinct_students_noted,
+       COUNT(DISTINCT CASE WHEN ds.student_id IS NOT NULL THEN n.student_id END) AS noted_students_with_detention
+FROM Teachers t
+LEFT JOIN noted n ON n.teacher_id = t.teacher_id
+LEFT JOIN detained_students ds ON ds.student_id = n.student_id
+GROUP BY t.teacher_id, teacher_name
+ORDER BY distinct_students_noted DESC, noted_students_with_detention DESC, t.teacher_id;",,"WITH teacher_students AS (
+    SELECT DISTINCT teacher_id, student_id
+    FROM Assessment_Notes
+),
+disciplined_students AS (
+    SELECT DISTINCT student_id
+    FROM Students_in_Detention
+)
+SELECT 
+    t.teacher_id,
+    t.first_name,
+    t.last_name,
+    COUNT(ts.student_id) AS total_students_notes,
+    COUNT(ds.student_id) AS disciplined_students
+FROM Teachers t
+LEFT JOIN teacher_students ts ON t.teacher_id = ts.teacher_id
+LEFT JOIN disciplined_students ds ON ts.student_id = ds.student_id
+GROUP BY t.teacher_id, t.first_name, t.last_name;","WITH DetainedStudents AS (
+  SELECT DISTINCT student_id
+  FROM Students_in_Detention
+)
+SELECT
+  t1.first_name,
+  t1.last_name,
+  COUNT(DISTINCT an.student_id) AS total_distinct_students_with_notes,
+  COUNT(DISTINCT ds.student_id) AS detained_students_among_them
+FROM Teachers AS t1
+LEFT JOIN Assessment_Notes AS an
+  ON t1.teacher_id = an.teacher_id
+LEFT JOIN DetainedStudents AS ds
+  ON an.student_id = ds.student_id
+GROUP BY
+  t1.teacher_id,
+  t1.first_name,
+  t1.last_name
+ORDER BY
+  t1.last_name,
+  t1.first_name;",
+253,behavior_monitoring,L12,1/3,"WITH per_student AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         COUNT(bi.incident_id) AS incident_count
+  FROM Students s
+  LEFT JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+  GROUP BY s.student_id, student_name
+)
+SELECT student_id,
+       student_name,
+       incident_count,
+       DENSE_RANK() OVER (ORDER BY incident_count DESC) AS rnk
+FROM per_student
+ORDER BY rnk, student_id;",,"WITH student_incident_counts AS (
+    SELECT 
+        s.student_id,
+        s.first_name,
+        s.last_name,
+        COUNT(bi.incident_id) AS incident_count
+    FROM Students s
+    LEFT JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+    GROUP BY s.student_id, s.first_name, s.last_name
+)
+SELECT 
+    student_id,
+    first_name,
+    last_name,
+    incident_count,
+    RANK() OVER (ORDER BY incident_count DESC) AS rank
+FROM student_incident_counts
+ORDER BY rank, student_id;","WITH StudentIncidentCounts AS (
+  SELECT
+    T1.student_id,
+    COUNT(T1.incident_id) AS incident_count
+  FROM Behavior_Incident AS T1
+  GROUP BY
+    T1.student_id
+)
+SELECT
+  T2.first_name,
+  T2.last_name,
+  T1.incident_count,
+  RANK() OVER (ORDER BY T1.incident_count DESC) AS student_rank
+FROM StudentIncidentCounts AS T1
+INNER JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+ORDER BY
+  student_rank;",
+254,behavior_monitoring,L12,1/3,"WITH per_student_type AS (
+  SELECT bi.incident_type_code,
+         bi.student_id,
+         COUNT(*) AS cnt
+  FROM Behavior_Incident bi
+  GROUP BY bi.incident_type_code, bi.student_id
+),
+ranked AS (
+  SELECT pst.*, 
+         ROW_NUMBER() OVER (
+           PARTITION BY pst.incident_type_code
+           ORDER BY pst.cnt DESC, pst.student_id
+         ) AS rn
+  FROM per_student_type pst
+)
+SELECT rit.incident_type_description AS incident_type,
+       s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       r.cnt AS incident_count
+FROM ranked r
+JOIN Ref_Incident_Type rit ON rit.incident_type_code = r.incident_type_code
+JOIN Students s ON s.student_id = r.student_id
+WHERE r.rn <= 2
+ORDER BY incident_type, incident_count DESC, s.student_id;",,"WITH incident_counts AS (
+    SELECT 
+        incident_type_code,
+        student_id,
+        COUNT(*) AS incident_count
+    FROM Behavior_Incident
+    GROUP BY incident_type_code, student_id
+)
+SELECT 
+    incident_type_code,
+    student_id,
+    incident_count
+FROM (
+    SELECT 
+        incident_type_code,
+        student_id,
+        incident_count,
+        ROW_NUMBER() OVER (
+            PARTITION BY incident_type_code 
+            ORDER BY incident_count DESC, student_id
+        ) AS rn
+    FROM incident_counts
+) ranked
+WHERE rn <= 2;","WITH RankedStudents AS (
+  SELECT
+    T1.student_id,
+    T1.incident_type_code,
+    COUNT(T1.incident_id) AS incident_count,
+    RANK() OVER (PARTITION BY T1.incident_type_code ORDER BY COUNT(T1.incident_id) DESC) AS rnk
+  FROM Behavior_Incident AS T1
+  GROUP BY
+    T1.student_id,
+    T1.incident_type_code
+)
+SELECT
+  T3.incident_type_description,
+  T2.first_name,
+  T2.last_name,
+  T1.incident_count
+FROM RankedStudents AS T1
+JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+JOIN Ref_Incident_Type AS T3
+  ON T1.incident_type_code = T3.incident_type_code
+WHERE
+  T1.rnk <= 2
+ORDER BY
+  T3.incident_type_description,
+  T1.incident_count DESC;",
+256,behavior_monitoring,L13,1/3,"WITH latest_span AS (
+  SELECT sa.student_id,
+         sa.date_address_from,
+         sa.date_address_to,
+         ROW_NUMBER() OVER (
+           PARTITION BY sa.student_id
+           ORDER BY sa.date_address_from DESC
+         ) AS rn
+  FROM Student_Addresses sa
+  WHERE sa.date_address_to IS NOT NULL
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       ls.date_address_from,
+       ls.date_address_to,
+       CAST(julianday(ls.date_address_to) - julianday(ls.date_address_from) AS REAL) AS days_lived
+FROM latest_span ls
+JOIN Students s ON s.student_id = ls.student_id
+WHERE ls.rn = 1
+  AND (julianday(ls.date_address_to) - julianday(ls.date_address_from)) < 30
+ORDER BY days_lived ASC, s.student_id;",,"WITH LatestAddress AS (
+    SELECT 
+        student_id,
+        address_id,
+        date_address_from,
+        date_address_to,
+        julianday(date_address_to) - julianday(date_address_from) AS days_stayed,
+        ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY date_address_from DESC) AS rn
+    FROM Student_Addresses
+    WHERE date_address_to IS NOT NULL
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name
+FROM LatestAddress la
+JOIN Students s ON la.student_id = s.student_id
+WHERE la.rn = 1 AND la.days_stayed < 30
+ORDER BY s.student_id;","WITH LatestAddress AS (
+  SELECT
+    student_id,
+    date_address_from,
+    date_address_to,
+    ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY date_address_from DESC) AS rn
+  FROM Student_Addresses
+  WHERE
+    date_address_to IS NOT NULL
+)
+SELECT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+JOIN LatestAddress AS T2
+  ON T1.student_id = T2.student_id
+WHERE
+  T2.rn = 1 AND julianday(T2.date_address_to) - julianday(T2.date_address_from) < 30;",
+258,behavior_monitoring,L13,1/3,"SELECT DISTINCT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+JOIN Students_in_Detention sid ON sid.incident_id = bi.incident_id AND sid.student_id = s.student_id
+JOIN Detention d ON d.detention_id = sid.detention_id
+WHERE (julianday(bi.date_incident_end) - julianday(bi.date_incident_start)) > (julianday(d.datetime_detention_end) - julianday(d.datetime_detention_start))
+ORDER BY s.student_id;",,"SELECT DISTINCT s.student_id, s.first_name, s.last_name
+FROM Students s
+WHERE EXISTS (
+    SELECT 1
+    FROM Behavior_Incident bi
+    JOIN Students_in_Detention sid ON bi.incident_id = sid.incident_id
+    JOIN Detention d ON sid.detention_id = d.detention_id
+    WHERE bi.student_id = s.student_id
+      AND (JULIANDAY(bi.date_incident_end) - JULIANDAY(bi.date_incident_start)) > 
+          (JULIANDAY(d.datetime_detention_end) - JULIANDAY(d.datetime_detention_start))
+);","SELECT DISTINCT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+JOIN Students_in_Detention AS T2
+  ON T1.student_id = T2.student_id
+JOIN Behavior_Incident AS T3
+  ON T2.incident_id = T3.incident_id
+JOIN Detention AS T4
+  ON T2.detention_id = T4.detention_id
+WHERE
+  (strftime('%s', T3.date_incident_end) - strftime('%s', T3.date_incident_start)) > (strftime('%s', T4.datetime_detention_end) - strftime('%s', T4.datetime_detention_start));",
+259,behavior_monitoring,L8,1/3,"WITH flagged AS (
+  SELECT DISTINCT student_id
+  FROM Behavior_Incident
+  WHERE recommendations = 'Transfer schools'
+),
+counts AS (
+  SELECT student_id, COUNT(*) AS cnt
+  FROM Behavior_Incident
+  GROUP BY student_id
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       COALESCE(c.cnt, 0) AS total_incidents
+FROM flagged f
+JOIN Students s ON s.student_id = f.student_id
+LEFT JOIN counts c ON c.student_id = s.student_id
+ORDER BY total_incidents DESC, s.student_id;",,"WITH students_with_transfer AS (
+    SELECT DISTINCT student_id
+    FROM Behavior_Incident
+    WHERE recommendations = 'Transfer schools'
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.middle_name,
+    s.last_name,
+    COUNT(bi.incident_id) AS total_incidents
+FROM students_with_transfer st
+JOIN Students s ON st.student_id = s.student_id
+LEFT JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+GROUP BY s.student_id, s.first_name, s.middle_name, s.last_name;","SELECT
+  T2.first_name,
+  T2.last_name,
+  COUNT(T1.incident_id)
+FROM Behavior_Incident AS T1
+INNER JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+GROUP BY
+  T1.student_id
+HAVING
+  SUM(CASE WHEN T1.recommendations = 'Transfer schools' THEN 1 ELSE 0 END) > 0;",
+261,behavior_monitoring,L8,1/3,"WITH teacher_students AS (
+  SELECT d.teacher_id,
+         sid.student_id
+  FROM Detention d
+  JOIN Students_in_Detention sid ON sid.detention_id = d.detention_id
+  GROUP BY d.teacher_id, sid.student_id
+)
+SELECT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       COUNT(DISTINCT ts.student_id) AS student_cnt,
+       GROUP_CONCAT(DISTINCT (s.first_name || ' ' || s.last_name), ', ') AS student_names
+FROM Teachers t
+JOIN teacher_students ts ON ts.teacher_id = t.teacher_id
+JOIN Students s ON s.student_id = ts.student_id
+GROUP BY t.teacher_id, teacher_name
+HAVING COUNT(DISTINCT ts.student_id) > 2
+ORDER BY student_cnt DESC, t.teacher_id;",,"WITH teacher_student_details AS (
+    SELECT
+        t.teacher_id,
+        t.first_name || COALESCE(' ' || t.middle_name, '') || ' ' || t.last_name AS teacher_name,
+        s.student_id,
+        s.first_name || COALESCE(' ' || s.middle_name, '') || ' ' || s.last_name AS student_name
+    FROM Teachers t
+    JOIN Detention d ON t.teacher_id = d.teacher_id
+    JOIN Students_in_Detention sid ON d.detention_id = sid.detention_id
+    JOIN Students s ON sid.student_id = s.student_id
+)
+SELECT
+    teacher_id,
+    teacher_name,
+    COUNT(DISTINCT student_id) AS number_of_students,
+    GROUP_CONCAT(DISTINCT student_name) AS student_names
+FROM teacher_student_details
+GROUP BY teacher_id, teacher_name
+HAVING COUNT(DISTINCT student_id) > 2
+ORDER BY number_of_students DESC, teacher_name;","WITH TeacherStudentDetention AS (
+  SELECT
+    t.teacher_id,
+    t.first_name AS teacher_first_name,
+    t.last_name AS teacher_last_name,
+    s.student_id,
+    s.first_name AS student_first_name,
+    s.last_name AS student_last_name
+  FROM Teachers AS t
+  JOIN Detention AS d
+    ON t.teacher_id = d.teacher_id
+  JOIN Students_in_Detention AS sid
+    ON d.detention_id = sid.detention_id
+  JOIN Students AS s
+    ON sid.student_id = s.student_id
+), QualifyingTeachers AS (
+  SELECT
+    teacher_id
+  FROM TeacherStudentDetention
+  GROUP BY
+    teacher_id
+  HAVING
+    COUNT(DISTINCT student_id) > 2
+)
+SELECT
+  T1.teacher_first_name || ' ' || T1.teacher_last_name AS teacher_name,
+  GROUP_CONCAT(T1.student_first_name || ' ' || T1.student_last_name, ', ') AS disciplined_students
+FROM TeacherStudentDetention AS T1
+JOIN QualifyingTeachers AS T2
+  ON T1.teacher_id = T2.teacher_id
+GROUP BY
+  T1.teacher_id,
+  teacher_name;",
+263,behavior_monitoring,L5,1/3,"SELECT DISTINCT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+WHERE bi.date_incident_start > s.date_first_rental
+ORDER BY s.student_id;",,"SELECT s.student_id, s.first_name, s.last_name
+FROM Students s
+WHERE EXISTS (
+    SELECT 1
+    FROM Behavior_Incident bi
+    WHERE bi.student_id = s.student_id
+      AND bi.date_incident_start > s.date_first_rental
+);","SELECT DISTINCT T1.first_name, T1.last_name FROM Students AS T1 JOIN Behavior_Incident AS T2 ON T1.student_id  =  T2.student_id WHERE T2.date_incident_start  >  T1.date_first_rental",
+264,behavior_monitoring,L12,1/3,"WITH per_student_rent AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         a.city,
+         COALESCE(SUM(CAST(sa.monthly_rental AS REAL)), 0.0) AS total_rent
+  FROM Students s
+  JOIN Addresses a ON a.address_id = s.address_id
+  LEFT JOIN Student_Addresses sa ON sa.student_id = s.student_id
+  GROUP BY s.student_id, student_name, a.city
+)
+SELECT student_id,
+       student_name,
+       city,
+       total_rent,
+       DENSE_RANK() OVER (PARTITION BY city ORDER BY total_rent DESC) AS rnk_in_city
+FROM per_student_rent
+ORDER BY city, rnk_in_city, student_id;",,"WITH student_rent_by_city AS (
+    SELECT 
+        a.city,
+        sa.student_id,
+        s.first_name,
+        s.last_name,
+        COALESCE(SUM(sa.monthly_rental), 0) AS total_monthly_rent
+    FROM Student_Addresses sa
+    INNER JOIN Addresses a ON sa.address_id = a.address_id
+    INNER JOIN Students s ON sa.student_id = s.student_id
+    GROUP BY a.city, sa.student_id, s.first_name, s.last_name
+)
+SELECT 
+    city,
+    student_id,
+    first_name,
+    last_name,
+    total_monthly_rent,
+    DENSE_RANK() OVER (PARTITION BY city ORDER BY total_monthly_rent DESC) AS rank
+FROM student_rent_by_city
+ORDER BY city, rank, student_id;","WITH StudentCityRent AS (
+  SELECT
+    T3.city,
+    T1.first_name,
+    T1.last_name,
+    SUM(T2.monthly_rental) AS total_monthly_rental
+  FROM Students AS T1
+  JOIN Student_Addresses AS T2
+    ON T1.student_id = T2.student_id
+  JOIN Addresses AS T3
+    ON T2.address_id = T3.address_id
+  GROUP BY
+    T3.city,
+    T1.student_id
+)
+SELECT
+  T.city,
+  T.first_name,
+  T.last_name,
+  T.total_monthly_rental,
+  RANK() OVER (PARTITION BY T.city ORDER BY T.total_monthly_rental DESC) AS student_rank
+FROM StudentCityRent AS T
+ORDER BY
+  T.city,
+  student_rank;",
+269,behavior_monitoring,L9,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+WHERE EXISTS (
+  SELECT 1
+  FROM Students_in_Detention sid
+  WHERE sid.student_id = s.student_id
+)
+AND NOT EXISTS (
+  SELECT 1
+  FROM Assessment_Notes an
+  WHERE an.student_id = s.student_id
+)
+ORDER BY s.student_id;",,"SELECT s.student_id, s.first_name, s.last_name, s.email_address
+FROM Students s
+WHERE EXISTS (
+    SELECT 1
+    FROM Students_in_Detention sid
+    WHERE sid.student_id = s.student_id
+)
+AND NOT EXISTS (
+    SELECT 1
+    FROM Assessment_Notes an
+    WHERE an.student_id = s.student_id
+);","SELECT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+WHERE
+  T1.student_id IN (
+    SELECT
+      student_id
+    FROM Behavior_Incident
+    EXCEPT
+    SELECT
+      student_id
+    FROM Assessment_Notes
+  )
+ORDER BY
+  T1.last_name,
+  T1.first_name;",
+270,behavior_monitoring,L10,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       (
+         SELECT rit.incident_type_description
+         FROM Behavior_Incident bi
+         JOIN Ref_Incident_Type rit ON rit.incident_type_code = bi.incident_type_code
+         WHERE bi.student_id = s.student_id
+         ORDER BY bi.date_incident_start ASC, bi.incident_id ASC
+         LIMIT 1
+       ) AS first_incident_type
+FROM Students s
+ORDER BY s.student_id;",,"WITH FirstIncident AS (
+    SELECT 
+        student_id, 
+        incident_type_code,
+        ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY date_incident_start ASC) AS rn
+    FROM Behavior_Incident
+)
+SELECT 
+    s.student_id,
+    fi.incident_type_code
+FROM Students s
+LEFT JOIN FirstIncident fi ON s.student_id = fi.student_id AND fi.rn = 1
+ORDER BY s.student_id;","WITH FirstIncident AS (
+  SELECT
+    T1.student_id,
+    T1.incident_type_code
+  FROM (
+    SELECT
+      student_id,
+      incident_type_code,
+      ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY date_incident_start ASC) AS rn
+    FROM Behavior_Incident
+  ) AS T1
+  WHERE
+    T1.rn = 1
+)
+SELECT
+  T1.first_name,
+  T1.last_name,
+  T3.incident_type_description
+FROM Students AS T1
+LEFT JOIN FirstIncident AS T2
+  ON T1.student_id = T2.student_id
+LEFT JOIN Ref_Incident_Type AS T3
+  ON T2.incident_type_code = T3.incident_type_code
+ORDER BY
+  T1.last_name,
+  T1.first_name;",
+271,behavior_monitoring,L12,1/3,"WITH teacher_type_students AS (
+  SELECT an.teacher_id,
+         bi.incident_type_code,
+         COUNT(DISTINCT an.student_id) AS student_cnt
+  FROM Assessment_Notes an
+  JOIN Behavior_Incident bi ON bi.student_id = an.student_id
+  WHERE an.student_id IS NOT NULL
+  GROUP BY an.teacher_id, bi.incident_type_code
+),
+ranked AS (
+  SELECT tts.*, 
+         ROW_NUMBER() OVER (
+           PARTITION BY incident_type_code
+           ORDER BY student_cnt DESC, teacher_id
+         ) AS rn
+  FROM teacher_type_students tts
+)
+SELECT rit.incident_type_description AS incident_type,
+       t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       r.student_cnt
+FROM ranked r
+JOIN Teachers t ON t.teacher_id = r.teacher_id
+JOIN Ref_Incident_Type rit ON rit.incident_type_code = r.incident_type_code
+WHERE r.rn = 1
+ORDER BY incident_type;",,"WITH IncidentStudents AS (
+    SELECT DISTINCT incident_type_code, student_id
+    FROM Behavior_Incident
+),
+TeacherNotes AS (
+    SELECT teacher_id, student_id
+    FROM Assessment_Notes
+),
+Combined AS (
+    SELECT 
+        i.incident_type_code,
+        t.teacher_id,
+        COUNT(DISTINCT i.student_id) AS student_count
+    FROM IncidentStudents i
+    INNER JOIN TeacherNotes t ON i.student_id = t.student_id
+    GROUP BY i.incident_type_code, t.teacher_id
+),
+Ranked AS (
+    SELECT 
+        incident_type_code,
+        teacher_id,
+        student_count,
+        RANK() OVER (PARTITION BY incident_type_code ORDER BY student_count DESC) AS rank_val
+    FROM Combined
+)
+SELECT incident_type_code, teacher_id, student_count
+FROM Ranked
+WHERE rank_val = 1
+ORDER BY incident_type_code;","WITH TeacherStudentCounts AS (
+  SELECT
+    T1.incident_type_code,
+    T2.teacher_id,
+    COUNT(DISTINCT T1.student_id) AS num_students
+  FROM Behavior_Incident AS T1
+  JOIN Assessment_Notes AS T2
+    ON T1.student_id = T2.student_id
+  GROUP BY
+    T1.incident_type_code,
+    T2.teacher_id
+), RankedTeachers AS (
+  SELECT
+    tsc.incident_type_code,
+    tsc.teacher_id,
+    tsc.num_students,
+    RANK() OVER (PARTITION BY tsc.incident_type_code ORDER BY tsc.num_students DESC) AS rnk
+  FROM TeacherStudentCounts AS tsc
+)
+SELECT
+  rit.incident_type_description,
+  t.first_name,
+  t.last_name,
+  rt.num_students
+FROM RankedTeachers AS rt
+JOIN Teachers AS t
+  ON rt.teacher_id = t.teacher_id
+JOIN Ref_Incident_Type AS rit
+  ON rt.incident_type_code = rit.incident_type_code
+WHERE
+  rt.rnk = 1
+ORDER BY
+  rit.incident_type_description;",
+273,behavior_monitoring,L14,0/3,"WITH bounds AS (
+  SELECT date(MIN(date_of_notes)) AS dmin,
+         date(MAX(date_of_notes)) AS dmax
+  FROM Assessment_Notes
+),
+days(d) AS (
+  SELECT dmin FROM bounds
+  UNION ALL
+  SELECT date(d, '+1 day')
+  FROM days
+  WHERE d < (SELECT dmax FROM bounds)
+),
+per_day AS (
+  SELECT date(date_of_notes) AS d,
+         COUNT(*) AS cnt
+  FROM Assessment_Notes
+  GROUP BY date(date_of_notes)
+)
+SELECT days.d AS day,
+       COALESCE(per_day.cnt, 0) AS note_count
+FROM days
+LEFT JOIN per_day ON per_day.d = days.d
+ORDER BY days.d;",,"WITH min_max AS (
+    SELECT 
+        MIN(DATE(date_of_notes)) AS min_date,
+        MAX(DATE(date_of_notes)) AS max_date
+    FROM Assessment_Notes
+),
+date_range AS (
+    SELECT min_date AS the_date
+    FROM min_max
+    UNION ALL
+    SELECT DATE(the_date, '+1 day')
+    FROM date_range
+    WHERE the_date < (SELECT max_date FROM min_max)
+),
+daily_notes AS (
+    SELECT 
+        DATE(date_of_notes) AS note_date,
+        COUNT(*) AS notes_count
+    FROM Assessment_Notes
+    GROUP BY DATE(date_of_notes)
+)
+SELECT 
+    d.the_date,
+    COALESCE(n.notes_count, 0) AS notes_count
+FROM date_range d
+LEFT JOIN daily_notes n ON d.the_date = n.note_date
+ORDER BY d.the_date;","WITH RECURSIVE DateRange AS (
+  SELECT
+    MIN(DATE(date_of_notes)) AS min_date,
+    MAX(DATE(date_of_notes)) AS max_date
+  FROM Assessment_Notes
+), AllDates (calendar_date) AS (
+  SELECT
+    min_date
+  FROM DateRange
+  UNION ALL
+  SELECT
+    DATE(calendar_date, '+1 day')
+  FROM AllDates
+  WHERE
+    calendar_date < (
+      SELECT
+        max_date
+      FROM DateRange
+    )
+), NoteCountsByDay AS (
+  SELECT
+    DATE(date_of_notes) AS note_date,
+    COUNT(notes_id) AS num_notes
+  FROM Assessment_Notes
+  GROUP BY
+    DATE(date_of_notes)
+)
+SELECT
+  ad.calendar_date AS ngay,
+  COALESCE(ncbd.num_notes, 0) AS so_luong_ghi_chu
+FROM AllDates AS ad
+LEFT JOIN NoteCountsByDay AS ncbd
+  ON ad.calendar_date = ncbd.note_date
+ORDER BY
+  ad.calendar_date;",
+274,behavior_monitoring,L15,1/3,"WITH base AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         s.date_first_rental,
+         s.date_left_university
+  FROM Students s
+  WHERE s.date_left_university IS NOT NULL
+),
+inc AS (
+  SELECT bi.student_id,
+         COUNT(*) AS incident_cnt
+  FROM Behavior_Incident bi
+  GROUP BY bi.student_id
+),
+metric AS (
+  SELECT b.student_id,
+         b.student_name,
+         COALESCE(i.incident_cnt, 0) AS incident_cnt,
+         CAST(julianday(b.date_left_university) - julianday(b.date_first_rental) AS REAL) AS days_span,
+         (CAST(COALESCE(i.incident_cnt, 0) AS REAL) / NULLIF(CAST(julianday(b.date_left_university) - julianday(b.date_first_rental) AS REAL), 0.0)) AS incidents_per_day
+  FROM base b
+  LEFT JOIN inc i ON i.student_id = b.student_id
+)
+SELECT student_id,
+       student_name,
+       incident_cnt,
+       days_span,
+       incidents_per_day,
+       DENSE_RANK() OVER (ORDER BY incidents_per_day DESC) AS rnk
+FROM metric
+ORDER BY rnk, student_id;",,"WITH student_stats AS (
+    SELECT 
+        s.student_id,
+        s.first_name,
+        s.last_name,
+        s.date_first_rental,
+        s.date_left_university,
+        COUNT(bi.incident_id) AS incident_count,
+        CASE 
+            WHEN ABS(JULIANDAY(s.date_left_university) - JULIANDAY(s.date_first_rental)) = 0 
+            THEN 1 
+            ELSE ABS(JULIANDAY(s.date_left_university) - JULIANDAY(s.date_first_rental)) 
+        END AS days_duration
+    FROM Students s
+    LEFT JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+    WHERE s.date_left_university IS NOT NULL
+    GROUP BY s.student_id, s.first_name, s.last_name, s.date_first_rental, s.date_left_university
+)
+SELECT 
+    student_id,
+    first_name,
+    last_name,
+    incident_count,
+    days_duration,
+    incident_count * 1.0 / days_duration AS incident_density,
+    RANK() OVER (ORDER BY incident_count * 1.0 / days_duration DESC) AS rank
+FROM student_stats
+ORDER BY rank;","WITH StudentStats AS (
+  SELECT
+    T1.student_id,
+    T1.first_name,
+    T1.last_name,
+    COUNT(T2.incident_id) AS total_incidents,
+    JULIANDAY(T1.date_left_university) - JULIANDAY(T1.date_first_rental) AS duration_days
+  FROM Students AS T1
+  LEFT JOIN Behavior_Incident AS T2
+    ON T1.student_id = T2.student_id
+  WHERE
+    T1.date_left_university IS NOT NULL AND T1.date_first_rental IS NOT NULL
+  GROUP BY
+    T1.student_id,
+    T1.first_name,
+    T1.last_name,
+    T1.date_left_university,
+    T1.date_first_rental
+)
+SELECT
+  T3.first_name,
+  T3.last_name,
+  CASE
+    WHEN T3.duration_days > 0
+    THEN CAST(T3.total_incidents AS REAL) / T3.duration_days
+    ELSE 0
+  END AS incident_density,
+  RANK() OVER (ORDER BY CASE WHEN T3.duration_days > 0 THEN CAST(T3.total_incidents AS REAL) / T3.duration_days ELSE 0 END DESC) AS student_rank
+FROM StudentStats AS T3
+ORDER BY
+  student_rank ASC;",
+276,behavior_monitoring,L5,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       COUNT(DISTINCT sa.address_id) AS distinct_addresses
+FROM Students s
+JOIN Student_Addresses sa ON sa.student_id = s.student_id
+GROUP BY s.student_id, student_name
+HAVING COUNT(DISTINCT sa.address_id) = 2
+ORDER BY s.student_id;",,"WITH StudentAllAddresses AS (
+    SELECT student_id, address_id
+    FROM Student_Addresses
+    UNION
+    SELECT student_id, address_id
+    FROM Students
+    WHERE address_id IS NOT NULL
+),
+AddressCounts AS (
+    SELECT student_id, COUNT(DISTINCT address_id) AS distinct_address_count
+    FROM StudentAllAddresses
+    GROUP BY student_id
+    HAVING COUNT(DISTINCT address_id) = 2
+)
+SELECT s.student_id, s.first_name, s.last_name
+FROM Students s
+INNER JOIN AddressCounts ac ON s.student_id = ac.student_id
+ORDER BY s.student_id;","WITH StudentAddressHistory AS (
+  SELECT
+    T1.student_id
+  FROM Student_Addresses AS T1
+  GROUP BY
+    T1.student_id
+  HAVING
+    COUNT(DISTINCT T1.address_id) = 2
+)
+SELECT
+  T2.first_name,
+  T2.last_name
+FROM StudentAddressHistory AS T1
+JOIN Students AS T2
+  ON T1.student_id = T2.student_id;",
+280,behavior_monitoring,L13,1/3,"SELECT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       COUNT(d.detention_id) AS detention_count,
+       AVG(CAST(julianday(d.datetime_detention_end) - julianday(d.datetime_detention_start) AS REAL)) AS avg_duration_days
+FROM Teachers t
+LEFT JOIN Detention d ON d.teacher_id = t.teacher_id
+GROUP BY t.teacher_id, teacher_name
+ORDER BY detention_count DESC, t.teacher_id;",,"SELECT 
+    t.teacher_id,
+    t.first_name,
+    t.last_name,
+    COUNT(d.detention_id) AS number_of_detentions,
+    AVG(JULIANDAY(d.datetime_detention_end) - JULIANDAY(d.datetime_detention_start)) AS avg_duration_days
+FROM Teachers t
+LEFT JOIN Detention d ON t.teacher_id = d.teacher_id
+GROUP BY t.teacher_id, t.first_name, t.last_name","SELECT
+  T1.first_name,
+  T1.last_name,
+  COUNT(T2.detention_id) AS so_luong_buoi_ky_luat,
+  COALESCE(AVG(julianday(T2.datetime_detention_end) - julianday(T2.datetime_detention_start)), 0) AS thoi_luong_trung_binh_ngay
+FROM Teachers AS T1
+LEFT JOIN Detention AS T2
+  ON T1.teacher_id = T2.teacher_id
+GROUP BY
+  T1.teacher_id,
+  T1.first_name,
+  T1.last_name
+ORDER BY
+  so_luong_buoi_ky_luat DESC;",
+281,behavior_monitoring,L9,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+WHERE EXISTS (
+  SELECT 1
+  FROM Students_in_Detention sid
+  WHERE sid.student_id = s.student_id
+)
+AND NOT EXISTS (
+  SELECT 1
+  FROM Students_in_Detention sid2
+  JOIN Detention d2 ON d2.detention_id = sid2.detention_id
+  WHERE sid2.student_id = s.student_id
+    AND d2.detention_type_code = 'AFTER'
+)
+ORDER BY s.student_id;",,"SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name
+FROM Students s
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM Students_in_Detention sid
+    JOIN Detention d ON sid.detention_id = d.detention_id
+    WHERE d.detention_type_code = 'AFTER'
+      AND sid.student_id = s.student_id
+);","WITH AfterSchoolDetentionStudents AS (
+  SELECT T1.student_id
+  FROM Students_in_Detention AS T1
+  JOIN Detention AS T2
+    ON T1.detention_id = T2.detention_id
+  WHERE
+    T2.detention_type_code = 'AFTER'
+), AllDetentionStudents AS (
+  SELECT DISTINCT
+    student_id
+  FROM Students_in_Detention
+)
+SELECT
+  T3.first_name,
+  T3.last_name
+FROM Students AS T3
+WHERE
+  T3.student_id IN (
+    SELECT
+      student_id
+    FROM AllDetentionStudents
+    EXCEPT
+    SELECT
+      student_id
+    FROM AfterSchoolDetentionStudents
+  );",
+286,behavior_monitoring,L8,1/3,"WITH per_student AS (
+  SELECT sa.student_id,
+         AVG(CAST(sa.monthly_rental AS REAL)) AS avg_rent
+  FROM Student_Addresses sa
+  WHERE sa.monthly_rental IS NOT NULL
+  GROUP BY sa.student_id
+),
+avg_all AS (
+  SELECT AVG(avg_rent) AS overall_avg
+  FROM per_student
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       ps.avg_rent
+FROM per_student ps
+JOIN Students s ON s.student_id = ps.student_id
+WHERE ps.avg_rent > (SELECT overall_avg FROM avg_all)
+ORDER BY ps.avg_rent DESC, s.student_id;",,"WITH overall_avg AS (
+    SELECT AVG(monthly_rental) AS avg_all
+    FROM Student_Addresses
+    WHERE monthly_rental IS NOT NULL
+),
+student_avg AS (
+    SELECT student_id, AVG(monthly_rental) AS avg_rent
+    FROM Student_Addresses
+    WHERE monthly_rental IS NOT NULL
+    GROUP BY student_id
+)
+SELECT s.student_id, s.first_name, s.last_name, sa.avg_rent
+FROM student_avg sa
+JOIN overall_avg oa ON sa.avg_rent > oa.avg_all
+JOIN Students s ON sa.student_id = s.student_id
+ORDER BY sa.avg_rent DESC;","SELECT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+INNER JOIN Student_Addresses AS T2
+  ON T1.student_id = T2.student_id
+WHERE
+  T2.monthly_rental IS NOT NULL
+GROUP BY
+  T1.student_id
+HAVING
+  AVG(T2.monthly_rental) > (
+    SELECT
+      AVG(monthly_rental)
+    FROM Student_Addresses
+  );",
+287,behavior_monitoring,L12,1/3,"WITH per_type_teacher AS (
+  SELECT d.detention_type_code,
+         d.teacher_id,
+         COUNT(*) AS cnt
+  FROM Detention d
+  WHERE d.teacher_id IS NOT NULL
+  GROUP BY d.detention_type_code, d.teacher_id
+),
+ranked AS (
+  SELECT ptt.*, 
+         ROW_NUMBER() OVER (
+           PARTITION BY detention_type_code
+           ORDER BY cnt DESC, teacher_id
+         ) AS rn
+  FROM per_type_teacher ptt
+)
+SELECT rdt.detention_type_description AS detention_type,
+       t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       r.cnt AS detention_count
+FROM ranked r
+JOIN Ref_Detention_Type rdt ON rdt.detention_type_code = r.detention_type_code
+JOIN Teachers t ON t.teacher_id = r.teacher_id
+WHERE r.rn = 1
+ORDER BY detention_type;",,"WITH DetentionCounts AS (
+    SELECT 
+        d.detention_type_code,
+        d.teacher_id,
+        COUNT(d.detention_id) AS num_detentions
+    FROM Detention d
+    GROUP BY d.detention_type_code, d.teacher_id
+),
+Ranked AS (
+    SELECT 
+        dc.detention_type_code,
+        dc.teacher_id,
+        dc.num_detentions,
+        RANK() OVER (PARTITION BY dc.detention_type_code ORDER BY dc.num_detentions DESC) AS rnk
+    FROM DetentionCounts dc
+)
+SELECT 
+    r.detention_type_code,
+    r.teacher_id,
+    t.first_name,
+    t.middle_name,
+    t.last_name,
+    r.num_detentions
+FROM Ranked r
+LEFT JOIN Teachers t ON r.teacher_id = t.teacher_id
+WHERE r.rnk = 1
+ORDER BY r.detention_type_code, r.teacher_id;","WITH TeacherDetentionCounts AS (
+  SELECT
+    detention_type_code,
+    teacher_id,
+    COUNT(detention_id) AS detention_count
+  FROM Detention
+  GROUP BY
+    detention_type_code,
+    teacher_id
+), RankedTeachers AS (
+  SELECT
+    detention_type_code,
+    teacher_id,
+    detention_count,
+    RANK() OVER (PARTITION BY detention_type_code ORDER BY detention_count DESC) AS rnk
+  FROM TeacherDetentionCounts
+)
+SELECT
+  T3.detention_type_description,
+  T2.first_name,
+  T2.last_name,
+  T1.detention_count
+FROM RankedTeachers AS T1
+JOIN Teachers AS T2
+  ON T1.teacher_id = T2.teacher_id
+JOIN Ref_Detention_Type AS T3
+  ON T1.detention_type_code = T3.detention_type_code
+WHERE
+  T1.rnk = 1;",
+290,behavior_monitoring,L8,1/3,"WITH per_student AS (
+  SELECT s.student_id,
+         COUNT(DISTINCT sid.incident_id) AS incident_cnt,
+         COUNT(DISTINCT sid.detention_id) AS detention_cnt
+  FROM Students s
+  LEFT JOIN Students_in_Detention sid ON sid.student_id = s.student_id
+  GROUP BY s.student_id
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       ps.incident_cnt,
+       ps.detention_cnt
+FROM per_student ps
+JOIN Students s ON s.student_id = ps.student_id
+WHERE ps.incident_cnt = ps.detention_cnt
+ORDER BY s.student_id;",,"WITH incident_counts AS (
+    SELECT student_id, COUNT(*) AS incident_count
+    FROM Behavior_Incident
+    GROUP BY student_id
+),
+detention_counts AS (
+    SELECT student_id, COUNT(*) AS detention_count
+    FROM Students_in_Detention
+    GROUP BY student_id
+)
+SELECT s.student_id, s.first_name, s.last_name,
+       COALESCE(i.incident_count, 0) AS incident_count,
+       COALESCE(d.detention_count, 0) AS detention_count
+FROM Students s
+LEFT JOIN incident_counts i ON s.student_id = i.student_id
+LEFT JOIN detention_counts d ON s.student_id = d.student_id
+WHERE COALESCE(i.incident_count, 0) = COALESCE(d.detention_count, 0);","WITH StudentStats AS (
+  SELECT
+    T1.student_id,
+    COUNT(DISTINCT T1.incident_id) AS incident_count,
+    COUNT(DISTINCT T1.detention_id) AS detention_count
+  FROM Students_in_Detention AS T1
+  GROUP BY
+    T1.student_id
+)
+SELECT
+  T2.first_name,
+  T2.last_name
+FROM Students AS T2
+JOIN StudentStats AS T3
+  ON T2.student_id = T3.student_id
+WHERE
+  T3.incident_count = T3.detention_count;",
+291,behavior_monitoring,L6,1/3,"WITH per_student AS (
+  SELECT bi.student_id,
+         COUNT(*) AS total_cnt,
+         SUM(CASE WHEN bi.incident_type_code = 'VIOLENCE' THEN 1 ELSE 0 END) AS violence_cnt
+  FROM Behavior_Incident bi
+  GROUP BY bi.student_id
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       ps.total_cnt,
+       ps.violence_cnt,
+       ROUND(100.0 * CAST(ps.violence_cnt AS REAL) / NULLIF(CAST(ps.total_cnt AS REAL), 0), 2) AS violence_pct
+FROM per_student ps
+JOIN Students s ON s.student_id = ps.student_id
+WHERE (CAST(ps.violence_cnt AS REAL) / NULLIF(CAST(ps.total_cnt AS REAL), 0)) > 0.5
+ORDER BY violence_pct DESC, s.student_id;",,"WITH incident_counts AS (
+    SELECT 
+        student_id,
+        COUNT(*) AS total_incidents,
+        SUM(CASE WHEN incident_type_code = 'VIOLENCE' THEN 1 ELSE 0 END) AS violence_incidents
+    FROM Behavior_Incident
+    GROUP BY student_id
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name,
+    i.violence_incidents,
+    i.total_incidents,
+    (i.violence_incidents * 1.0 / i.total_incidents) AS violence_ratio
+FROM incident_counts i
+JOIN Students s ON i.student_id = s.student_id
+WHERE (i.violence_incidents * 1.0 / i.total_incidents) > 0.5
+ORDER BY s.student_id;","SELECT
+  T2.first_name,
+  T2.last_name
+FROM Behavior_Incident AS T1
+JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+GROUP BY
+  T1.student_id
+HAVING
+  CAST(SUM(CASE WHEN T1.incident_type_code = 'VIOLENCE' THEN 1 ELSE 0 END) AS REAL) / COUNT(T1.incident_id) > 0.5;",
+293,behavior_monitoring,L12,1/3,"WITH per_student AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         a.state_province_county AS st,
+         COUNT(bi.incident_id) AS cnt
+  FROM Students s
+  JOIN Addresses a ON a.address_id = s.address_id
+  LEFT JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+  GROUP BY s.student_id, student_name, a.state_province_county
+),
+ranked AS (
+  SELECT ps.*, 
+         ROW_NUMBER() OVER (
+           PARTITION BY st
+           ORDER BY cnt DESC, student_id
+         ) AS rn
+  FROM per_student ps
+)
+SELECT st AS state,
+       student_id,
+       student_name,
+       cnt AS incident_count
+FROM ranked
+WHERE rn = 1
+ORDER BY state;",,"WITH student_incident_count AS (
+    SELECT 
+        s.student_id,
+        s.first_name,
+        s.last_name,
+        a.state_province_county,
+        COUNT(bi.incident_id) AS incident_count
+    FROM Students s
+    LEFT JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+    LEFT JOIN Addresses a ON s.address_id = a.address_id
+    GROUP BY s.student_id, a.state_province_county
+),
+ranked_students AS (
+    SELECT 
+        student_id,
+        first_name,
+        last_name,
+        state_province_county,
+        incident_count,
+        ROW_NUMBER() OVER (
+            PARTITION BY state_province_county 
+            ORDER BY incident_count DESC, student_id ASC
+        ) AS rn
+    FROM student_incident_count
+)
+SELECT 
+    state_province_county AS state,
+    student_id,
+    first_name,
+    last_name,
+    incident_count
+FROM ranked_students
+WHERE rn = 1
+ORDER BY state_province_county;","WITH StudentIncidentCounts AS (
+  SELECT
+    T2.state_province_county,
+    T1.student_id,
+    COUNT(T3.incident_id) AS incident_count
+  FROM Students AS T1
+  INNER JOIN Addresses AS T2
+    ON T1.address_id = T2.address_id
+  INNER JOIN Behavior_Incident AS T3
+    ON T1.student_id = T3.student_id
+  GROUP BY
+    T2.state_province_county,
+    T1.student_id
+), RankedStudents AS (
+  SELECT
+    state_province_county,
+    student_id,
+    incident_count,
+    ROW_NUMBER() OVER (PARTITION BY state_province_county ORDER BY incident_count DESC, student_id ASC) AS rn
+  FROM StudentIncidentCounts
+)
+SELECT
+  state_province_county,
+  student_id,
+  incident_count
+FROM RankedStudents
+WHERE
+  rn = 1;",
+298,behavior_monitoring,L12,1/3,"WITH per_inc AS (
+  SELECT bi.student_id,
+         bi.incident_id,
+         bi.date_incident_start,
+         bi.date_incident_end,
+         CAST(julianday(bi.date_incident_end) - julianday(bi.date_incident_start) AS REAL) AS dur
+  FROM Behavior_Incident bi
+),
+ranked AS (
+  SELECT per_inc.*, 
+         ROW_NUMBER() OVER (
+           PARTITION BY student_id
+           ORDER BY dur DESC, incident_id
+         ) AS rn
+  FROM per_inc
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name,
+       r.incident_id,
+       r.dur AS duration_days
+FROM ranked r
+JOIN Students s ON s.student_id = r.student_id
+WHERE r.rn = 1
+ORDER BY s.student_id;",,"WITH IncidentDuration AS (
+    SELECT 
+        incident_id,
+        student_id,
+        date_incident_start,
+        date_incident_end,
+        incident_summary,
+        julianday(date_incident_end) - julianday(date_incident_start) AS duration_days
+    FROM Behavior_Incident
+    WHERE date_incident_start IS NOT NULL 
+        AND date_incident_end IS NOT NULL
+),
+RankedIncidents AS (
+    SELECT 
+        *,
+        RANK() OVER (PARTITION BY student_id ORDER BY duration_days DESC) AS rnk
+    FROM IncidentDuration
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name,
+    ri.incident_id,
+    ri.date_incident_start,
+    ri.date_incident_end,
+    ri.duration_days,
+    ri.incident_summary
+FROM RankedIncidents ri
+INNER JOIN Students s ON ri.student_id = s.student_id
+WHERE ri.rnk = 1
+ORDER BY s.student_id;","WITH RankedIncidents AS (
+  SELECT
+    student_id,
+    incident_id,
+    date_incident_start,
+    date_incident_end,
+    ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY julianday(date_incident_end) - julianday(date_incident_start) DESC) AS rn
+  FROM Behavior_Incident
+)
+SELECT
+  T1.first_name,
+  T1.last_name,
+  T2.incident_id,
+  T2.date_incident_start,
+  T2.date_incident_end
+FROM Students AS T1
+JOIN RankedIncidents AS T2
+  ON T1.student_id = T2.student_id
+WHERE
+  T2.rn = 1;",
+299,behavior_monitoring,L12,1/3,"WITH per_teacher AS (
+  SELECT d.teacher_id,
+         COUNT(DISTINCT sid.student_id) AS student_cnt
+  FROM Detention d
+  JOIN Students_in_Detention sid ON sid.detention_id = d.detention_id
+  WHERE d.teacher_id IS NOT NULL
+  GROUP BY d.teacher_id
+)
+SELECT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       COALESCE(pt.student_cnt, 0) AS detained_students,
+       DENSE_RANK() OVER (ORDER BY COALESCE(pt.student_cnt, 0) DESC) AS rnk
+FROM Teachers t
+LEFT JOIN per_teacher pt ON pt.teacher_id = t.teacher_id
+ORDER BY rnk, t.teacher_id;",,"SELECT 
+    t.teacher_id,
+    t.first_name,
+    t.middle_name,
+    t.last_name,
+    COUNT(DISTINCT sid.student_id) AS distinct_student_count
+FROM Teachers t
+LEFT JOIN Detention d ON t.teacher_id = d.teacher_id
+LEFT JOIN Students_in_Detention sid ON d.detention_id = sid.detention_id
+GROUP BY t.teacher_id, t.first_name, t.middle_name, t.last_name
+ORDER BY distinct_student_count DESC;","SELECT
+  T1.first_name,
+  T1.last_name,
+  COUNT(DISTINCT T3.student_id) AS number_of_distinct_students
+FROM Teachers AS T1
+JOIN Detention AS T2
+  ON T1.teacher_id = T2.teacher_id
+JOIN Students_in_Detention AS T3
+  ON T2.detention_id = T3.detention_id
+GROUP BY
+  T1.teacher_id,
+  T1.first_name,
+  T1.last_name
+ORDER BY
+  number_of_distinct_students DESC;",
+306,behavior_monitoring,L5,1/3,"SELECT DISTINCT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name
+FROM Teachers t
+JOIN Assessment_Notes an ON an.teacher_id = t.teacher_id
+JOIN Students s ON s.student_id = an.student_id
+WHERE s.other_student_details = 'first honor'
+ORDER BY t.teacher_id;",,"SELECT DISTINCT 
+    t.teacher_id,
+    t.first_name,
+    t.last_name
+FROM Assessment_Notes an
+INNER JOIN Students s ON an.student_id = s.student_id
+INNER JOIN Teachers t ON an.teacher_id = t.teacher_id
+WHERE s.other_student_details IS NOT NULL
+ORDER BY t.teacher_id;","SELECT DISTINCT
+  T1.first_name,
+  T1.last_name
+FROM Teachers AS T1
+JOIN Assessment_Notes AS T2
+  ON T1.teacher_id = T2.teacher_id
+JOIN Students AS T3
+  ON T2.student_id = T3.student_id
+WHERE
+  T3.other_student_details IS NOT NULL AND T3.other_student_details <> '';",
+307,behavior_monitoring,L5,1/3,"SELECT DISTINCT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+JOIN Students_in_Detention sid ON sid.incident_id = bi.incident_id AND sid.student_id = s.student_id
+WHERE bi.incident_type_code = 'VIOLENCE'
+ORDER BY s.student_id;",,"SELECT DISTINCT s.student_id, s.first_name, s.last_name
+FROM Students s
+JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+JOIN Students_in_Detention sid ON bi.incident_id = sid.incident_id
+WHERE bi.incident_type_code = 'VIOLENCE';","SELECT DISTINCT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+INNER JOIN Behavior_Incident AS T2
+  ON T1.student_id = T2.student_id
+INNER JOIN Students_in_Detention AS T3
+  ON T2.incident_id = T3.incident_id
+WHERE
+  T2.incident_type_code = 'VIOLENCE';",
+308,behavior_monitoring,L6,1/3,"SELECT d.detention_id,
+       rdt.detention_type_description AS detention_type,
+       COUNT(DISTINCT sid.student_id) AS student_cnt,
+       GROUP_CONCAT(DISTINCT (s.first_name || ' ' || s.last_name), ', ') AS student_names
+FROM Detention d
+JOIN Ref_Detention_Type rdt ON rdt.detention_type_code = d.detention_type_code
+JOIN Students_in_Detention sid ON sid.detention_id = d.detention_id
+JOIN Students s ON s.student_id = sid.student_id
+GROUP BY d.detention_id, rdt.detention_type_description
+HAVING COUNT(DISTINCT sid.student_id) > 1
+ORDER BY student_cnt DESC, d.detention_id;",,"WITH DetentionStudentCount AS (
+    SELECT 
+        sid.detention_id,
+        COUNT(sid.student_id) AS student_count
+    FROM Students_in_Detention sid
+    GROUP BY sid.detention_id
+    HAVING COUNT(sid.student_id) > 1
+)
+SELECT 
+    d.detention_id,
+    d.detention_type_code,
+    d.datetime_detention_start,
+    d.datetime_detention_end,
+    GROUP_CONCAT(s.first_name || ' ' || s.last_name) AS student_names,
+    dsc.student_count AS number_of_students
+FROM DetentionStudentCount dsc
+JOIN Students_in_Detention sid ON dsc.detention_id = sid.detention_id
+JOIN Students s ON sid.student_id = s.student_id
+JOIN Detention d ON dsc.detention_id = d.detention_id
+GROUP BY d.detention_id, d.detention_type_code, d.datetime_detention_start, d.datetime_detention_end;","SELECT
+  T1.detention_id,
+  GROUP_CONCAT(T2.first_name || ' ' || T2.last_name, '; ') AS student_list
+FROM Students_in_Detention AS T1
+JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+GROUP BY
+  T1.detention_id
+HAVING
+  COUNT(T1.student_id) > 1;",
+309,behavior_monitoring,L9,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+WHERE s.address_id NOT IN (
+  SELECT DISTINCT sa.address_id
+  FROM Student_Addresses sa
+)
+ORDER BY s.student_id;",,"SELECT s.*
+FROM Students s
+WHERE s.address_id IS NOT NULL
+AND NOT EXISTS (
+  SELECT 1
+  FROM Student_Addresses sa
+  WHERE sa.address_id = s.address_id
+);","SELECT T1.first_name, T1.last_name FROM Students AS T1 WHERE T1.address_id NOT IN (SELECT T2.address_id FROM Student_Addresses AS T2)",
+313,behavior_monitoring,L5,1/3,"SELECT DISTINCT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+JOIN Students_in_Detention sid ON sid.student_id = s.student_id
+JOIN Detention d ON d.detention_id = sid.detention_id
+WHERE s.date_left_university IS NOT NULL
+  AND d.datetime_detention_end > s.date_left_university
+ORDER BY s.student_id;",,"SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name
+FROM 
+    Students s
+WHERE 
+    EXISTS (
+        SELECT 1
+        FROM Students_in_Detention sid
+        JOIN Detention d ON sid.detention_id = d.detention_id
+        WHERE sid.student_id = s.student_id
+          AND d.datetime_detention_end > s.date_left_university
+    );","SELECT DISTINCT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+INNER JOIN Students_in_Detention AS T2
+  ON T1.student_id = T2.student_id
+INNER JOIN Detention AS T3
+  ON T2.detention_id = T3.detention_id
+WHERE
+  T3.datetime_detention_end > T1.date_left_university;",
+315,behavior_monitoring,L9,1/3,"SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM Students s
+WHERE EXISTS (
+  SELECT 1
+  FROM Behavior_Incident bi
+  WHERE bi.student_id = s.student_id
+)
+AND NOT EXISTS (
+  SELECT 1
+  FROM Students_in_Detention sid
+  WHERE sid.student_id = s.student_id
+)
+ORDER BY s.student_id;",,"SELECT DISTINCT s.student_id, s.first_name, s.last_name
+FROM Behavior_Incident bi
+INNER JOIN Students s ON bi.student_id = s.student_id
+WHERE NOT EXISTS (
+   SELECT 1 FROM Students_in_Detention sid WHERE sid.student_id = s.student_id
+)
+ORDER BY s.student_id;","SELECT
+  T1.first_name,
+  T1.last_name
+FROM Students AS T1
+WHERE
+  T1.student_id IN (
+    SELECT
+      student_id
+    FROM Behavior_Incident
+  ) AND T1.student_id NOT IN (
+    SELECT
+      student_id
+    FROM Students_in_Detention
+  );",
+317,behavior_monitoring,L6,1/3,"WITH per_teacher AS (
+  SELECT t.teacher_id,
+         SUM(CASE WHEN d.detention_type_code = 'BREAK ' THEN 1 ELSE 0 END) AS break_cnt,
+         SUM(CASE WHEN d.detention_type_code = 'LUNCH' THEN 1 ELSE 0 END) AS lunch_cnt
+  FROM Teachers t
+  LEFT JOIN Detention d ON d.teacher_id = t.teacher_id
+  GROUP BY t.teacher_id
+)
+SELECT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name,
+       pt.break_cnt,
+       pt.lunch_cnt
+FROM per_teacher pt
+JOIN Teachers t ON t.teacher_id = pt.teacher_id
+WHERE pt.break_cnt > pt.lunch_cnt
+ORDER BY (pt.break_cnt - pt.lunch_cnt) DESC, t.teacher_id;",,"WITH teacher_counts AS (
+    SELECT 
+        d.teacher_id,
+        SUM(CASE WHEN d.detention_type_code = 'BREAK ' THEN 1 ELSE 0 END) AS break_count,
+        SUM(CASE WHEN d.detention_type_code = 'LUNCH' THEN 1 ELSE 0 END) AS lunch_count
+    FROM Detention d
+    WHERE d.detention_type_code IN ('BREAK ', 'LUNCH')
+    GROUP BY d.teacher_id
+)
+SELECT 
+    t.teacher_id,
+    t.first_name,
+    t.last_name,
+    tc.break_count,
+    tc.lunch_count
+FROM teacher_counts tc
+INNER JOIN Teachers t ON tc.teacher_id = t.teacher_id
+WHERE tc.break_count > tc.lunch_count;","SELECT
+  T1.first_name,
+  T1.last_name
+FROM Teachers AS T1
+JOIN Detention AS T2
+  ON T1.teacher_id = T2.teacher_id
+GROUP BY
+  T1.teacher_id
+HAVING
+  SUM(CASE WHEN T2.detention_type_code = 'BREAK ' THEN 1 ELSE 0 END) > SUM(CASE WHEN T2.detention_type_code = 'LUNCH' THEN 1 ELSE 0 END);",
+318,behavior_monitoring,L12,1/3,"WITH per_student AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         COALESCE(SUM(CAST(sa.monthly_rental AS REAL)), 0.0) AS total_rent
+  FROM Students s
+  LEFT JOIN Student_Addresses sa ON sa.student_id = s.student_id
+  GROUP BY s.student_id, student_name
+),
+ranked AS (
+  SELECT *,
+         DENSE_RANK() OVER (ORDER BY total_rent DESC) AS rnk
+  FROM per_student
+)
+SELECT student_id, student_name, total_rent
+FROM ranked
+WHERE rnk <= 3
+ORDER BY rnk, student_id;",,"WITH total_rent AS (
+    SELECT 
+        student_id,
+        SUM(monthly_rental) AS total_monthly_rent
+    FROM Student_Addresses
+    GROUP BY student_id
+),
+ranked AS (
+    SELECT 
+        student_id,
+        total_monthly_rent,
+        RANK() OVER (ORDER BY total_monthly_rent DESC) AS rank
+    FROM total_rent
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name,
+    r.total_monthly_rent,
+    r.rank
+FROM ranked r
+JOIN Students s ON r.student_id = s.student_id
+WHERE r.rank <= 3
+ORDER BY r.rank, s.student_id;","WITH StudentTotalRentals AS (
+  SELECT
+    T1.first_name,
+    T1.last_name,
+    SUM(T2.monthly_rental) AS total_rental
+  FROM Students AS T1
+  JOIN Student_Addresses AS T2
+    ON T1.student_id = T2.student_id
+  GROUP BY
+    T1.student_id
+)
+SELECT
+  T1.first_name,
+  T1.last_name,
+  T1.total_rental
+FROM StudentTotalRentals AS T1
+ORDER BY
+  T1.total_rental DESC
+LIMIT 3;",
+321,behavior_monitoring,L10,1/3,"SELECT DISTINCT t.teacher_id,
+       (t.first_name || ' ' || t.last_name) AS teacher_name
+FROM Teachers t
+JOIN Detention d ON d.teacher_id = t.teacher_id
+JOIN Students_in_Detention sid ON sid.detention_id = d.detention_id
+JOIN Behavior_Incident bi_linked ON bi_linked.incident_id = sid.incident_id
+WHERE bi_linked.incident_type_code <> 'VIOLENCE'
+  AND EXISTS (
+    SELECT 1
+    FROM Behavior_Incident bi2
+    WHERE bi2.student_id = sid.student_id
+      AND bi2.incident_type_code = 'VIOLENCE'
+  )
+ORDER BY t.teacher_id;",,"WITH violent_students AS (
+    SELECT DISTINCT student_id
+    FROM Behavior_Incident
+    WHERE incident_type_code = 'VIOLENCE'
+),
+valid_detentions AS (
+    SELECT DISTINCT sid.detention_id
+    FROM Students_in_Detention sid
+    JOIN Behavior_Incident bi ON sid.incident_id = bi.incident_id
+    WHERE sid.student_id IN (SELECT student_id FROM violent_students)
+      AND bi.incident_type_code != 'VIOLENCE'
+)
+SELECT DISTINCT t.teacher_id, t.first_name, t.last_name
+FROM valid_detentions vd
+JOIN Detention d ON vd.detention_id = d.detention_id
+JOIN Teachers t ON d.teacher_id = t.teacher_id
+ORDER BY t.teacher_id;","WITH StudentsWithViolence AS (
+  SELECT DISTINCT student_id
+  FROM Behavior_Incident
+  WHERE incident_type_code = 'VIOLENCE'
+)
+SELECT DISTINCT
+  T1.first_name,
+  T1.last_name
+FROM Teachers AS T1
+JOIN Detention AS T2
+  ON T1.teacher_id = T2.teacher_id
+JOIN Students_in_Detention AS T3
+  ON T2.detention_id = T3.detention_id
+JOIN Behavior_Incident AS T4
+  ON T3.incident_id = T4.incident_id
+WHERE
+  T3.student_id IN (SELECT student_id FROM StudentsWithViolence) AND T4.incident_type_code != 'VIOLENCE';",
+322,behavior_monitoring,L12,1/3,"WITH per_student AS (
+  SELECT s.student_id,
+         (s.first_name || ' ' || s.last_name) AS student_name,
+         SUM(CASE WHEN bi.incident_type_code = 'VIOLENCE' THEN 1 ELSE 0 END) AS violence_cnt,
+         SUM(CASE WHEN bi.incident_id IS NOT NULL AND bi.incident_type_code <> 'VIOLENCE' THEN 1 ELSE 0 END) AS other_cnt
+  FROM Students s
+  LEFT JOIN Behavior_Incident bi ON bi.student_id = s.student_id
+  GROUP BY s.student_id, student_name
+),
+scored AS (
+  SELECT student_id,
+         student_name,
+         violence_cnt,
+         other_cnt,
+         (violence_cnt * 2 + other_cnt) AS risk_score
+  FROM per_student
+)
+SELECT student_id,
+       student_name,
+       violence_cnt,
+       other_cnt,
+       risk_score,
+       DENSE_RANK() OVER (ORDER BY risk_score DESC) AS rnk
+FROM scored
+ORDER BY rnk, student_id;",,"WITH StudentIncidentCounts AS (
+    SELECT 
+        s.student_id,
+        s.first_name,
+        s.last_name,
+        SUM(CASE WHEN bi.incident_type_code = 'VIOLENCE' THEN 2 ELSE 1 END) AS risk_score
+    FROM Students s
+    LEFT JOIN Behavior_Incident bi ON s.student_id = bi.student_id
+    GROUP BY s.student_id, s.first_name, s.last_name
+)
+SELECT 
+    student_id,
+    first_name,
+    last_name,
+    COALESCE(risk_score, 0) AS risk_score
+FROM StudentIncidentCounts
+ORDER BY risk_score DESC;","WITH StudentIncidentCounts AS (
+  SELECT
+    student_id,
+    SUM(CASE WHEN incident_type_code = 'VIOLENCE' THEN 1 ELSE 0 END) AS violence_incidents,
+    SUM(CASE WHEN incident_type_code != 'VIOLENCE' THEN 1 ELSE 0 END) AS other_incidents
+  FROM Behavior_Incident
+  GROUP BY
+    student_id
+)
+SELECT
+  T1.first_name,
+  T1.last_name,
+  T2.violence_incidents * 2 + T2.other_incidents AS risk_score
+FROM Students AS T1
+JOIN StudentIncidentCounts AS T2
+  ON T1.student_id = T2.student_id
+ORDER BY
+  risk_score DESC;",
+323,behavior_monitoring,L12,1/3,"WITH latest_inc AS (
+  SELECT bi.student_id,
+         bi.incident_id,
+         bi.incident_type_code,
+         bi.date_incident_end,
+         ROW_NUMBER() OVER (
+           PARTITION BY bi.student_id
+           ORDER BY bi.date_incident_end DESC, bi.incident_id DESC
+         ) AS rn
+  FROM Behavior_Incident bi
+)
+SELECT s.student_id,
+       (s.first_name || ' ' || s.last_name) AS student_name
+FROM latest_inc li
+JOIN Students s ON s.student_id = li.student_id
+WHERE li.rn = 1
+  AND li.incident_type_code <> 'NOISE'
+ORDER BY s.student_id;",,"WITH MaxIncidentDate AS (
+    SELECT 
+        student_id,
+        MAX(date_incident_end) AS max_date_end
+    FROM Behavior_Incident
+    GROUP BY student_id
+)
+SELECT 
+    s.student_id,
+    s.first_name,
+    s.last_name
+FROM Students s
+INNER JOIN MaxIncidentDate mid ON s.student_id = mid.student_id
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM Behavior_Incident bi
+    WHERE bi.student_id = mid.student_id
+        AND bi.date_incident_end = mid.max_date_end
+        AND bi.incident_type_code = 'NOISE'
+);","WITH RankedIncidents AS (
+  SELECT
+    student_id,
+    incident_type_code,
+    ROW_NUMBER() OVER (PARTITION BY student_id ORDER BY date_incident_end DESC) AS rn
+  FROM Behavior_Incident
+)
+SELECT
+  T2.first_name,
+  T2.last_name
+FROM RankedIncidents AS T1
+JOIN Students AS T2
+  ON T1.student_id = T2.student_id
+WHERE
+  T1.rn = 1 AND T1.incident_type_code != 'NOISE';",
+327,activity_1,L3,1/3,"WITH per_act AS (
+ SELECT
+ actid,
+ COUNT(DISTINCT stuid) AS student_cnt
+ FROM Participates_in
+ GROUP BY actid
+)
+SELECT
+ a.actid,
+ a.activity_name,
+ COALESCE(p.student_cnt, 0) AS student_cnt
+FROM Activity a
+LEFT JOIN per_act p
+ ON p.actid = a.actid
+WHERE COALESCE(p.student_cnt, 0) > (
+ SELECT AVG(student_cnt) FROM per_act
+)
+ORDER BY student_cnt DESC, a.activity_name ASC;",,"WITH activity_counts AS (
+    SELECT 
+        a.actid,
+        COUNT(DISTINCT p.stuid) AS student_count
+    FROM Activity a
+    LEFT JOIN Participates_in p ON a.actid = p.actid
+    GROUP BY a.actid
+),
+avg_count AS (
+    SELECT AVG(student_count) AS avg_student_count
+    FROM activity_counts
+)
+SELECT 
+    a.actid,
+    a.activity_name,
+    ac.student_count
+FROM Activity a
+JOIN activity_counts ac ON a.actid = ac.actid
+JOIN avg_count av ON ac.student_count > av.avg_student_count;","WITH ActivityStudentCounts AS (
+  SELECT
+    T1.actid,
+    COUNT(T1.stuid) AS num_students
+  FROM Participates_in AS T1
+  GROUP BY
+    T1.actid
+)
+SELECT
+  T2.activity_name
+FROM ActivityStudentCounts AS T1
+JOIN Activity AS T2
+  ON T1.actid = T2.actid
+WHERE
+  T1.num_students > (
+    SELECT
+      AVG(num_students)
+    FROM ActivityStudentCounts
+  );",
+328,activity_1,L4,1/3,"SELECT
+ s.StuID,
+ s.LName,
+ s.Fname,
+ s.Age,
+ s.Sex,
+ COALESCE(f.Lname || ' ' || f.Fname, NULL) AS advisor_name
+FROM Student s
+LEFT JOIN Faculty f
+ ON s.Advisor = f.FacID
+ORDER BY s.LName ASC, s.Fname ASC, s.StuID ASC;",,"SELECT 
+    s.StuID,
+    s.Fname AS student_first,
+    s.LName AS student_last,
+    f.Fname AS advisor_first,
+    f.Lname AS advisor_last
+FROM Student s
+LEFT JOIN Faculty f ON s.Advisor = f.FacID
+ORDER BY s.StuID;","SELECT
+  s.Fname || ' ' || s.LName AS student_ho_ten,
+  COALESCE(f.Fname || ' ' || f.LName, 'Không có cố vấn') AS covan_ho_ten
+FROM Student AS s
+LEFT JOIN Faculty AS f
+  ON s.Advisor = f.FacID
+ORDER BY
+  s.LName,
+  s.Fname;",
+330,activity_1,L4,1/3,"SELECT
+ f.FacID,
+ f.Lname,
+ f.Fname,
+ COUNT(s.StuID) AS advisee_count
+FROM Faculty f
+JOIN Student s
+ ON s.Advisor = f.FacID
+GROUP BY f.FacID, f.Lname, f.Fname
+HAVING COUNT(s.StuID) >= 3
+ORDER BY advisee_count DESC, f.Lname ASC, f.Fname ASC;",,"WITH advisor_counts AS (
+    SELECT s.Advisor AS FacID, COUNT(s.StuID) AS student_count
+    FROM Student s
+    GROUP BY s.Advisor
+    HAVING COUNT(s.StuID) >= 3
+)
+SELECT f.Lname, f.Fname, ac.student_count
+FROM Faculty f
+JOIN advisor_counts ac ON f.FacID = ac.FacID
+ORDER BY ac.student_count DESC;","SELECT
+  T2.Fname || ' ' || T2.Lname AS ""Họ và tên"",
+  COUNT(T1.StuID) AS ""Số sinh viên""
+FROM Student AS T1
+JOIN Faculty AS T2
+  ON T1.Advisor = T2.FacID
+GROUP BY
+  T2.FacID
+HAVING
+  COUNT(T1.StuID) >= 3
+ORDER BY
+  ""Số sinh viên"" DESC;",
+334,activity_1,L6,1/3,"SELECT
+ f.FacID,
+ f.Lname,
+ f.Fname,
+ COALESCE(GROUP_CONCAT(a.activity_name, ', '), '') AS activity_list
+FROM Faculty f
+LEFT JOIN Faculty_Participates_in fpi
+ ON fpi.FacID = f.FacID
+LEFT JOIN Activity a
+ ON a.actid = fpi.actid
+GROUP BY f.FacID, f.Lname, f.Fname
+ORDER BY f.Lname ASC, f.Fname ASC, f.FacID ASC;",,"WITH FacultyActivities AS (
+    SELECT 
+        f.FacID,
+        f.Lname,
+        f.Fname,
+        a.activity_name
+    FROM Faculty f
+    LEFT JOIN Faculty_Participates_in fp ON f.FacID = fp.FacID
+    LEFT JOIN Activity a ON fp.actid = a.actid
+)
+SELECT 
+    FacID,
+    Lname,
+    Fname,
+    COALESCE(GROUP_CONCAT(DISTINCT activity_name, ', '), '') AS activities
+FROM FacultyActivities
+GROUP BY FacID, Lname, Fname
+ORDER BY FacID;","SELECT
+  T1.Fname,
+  T1.Lname,
+  GROUP_CONCAT(T3.activity_name, ', ') AS Hoat_dong_tham_gia
+FROM Faculty AS T1
+JOIN Faculty_Participates_in AS T2
+  ON T1.FacID = T2.FacID
+JOIN Activity AS T3
+  ON T2.actid = T3.actid
+GROUP BY
+  T1.FacID;",
+349,activity_1,L3,1/3,"SELECT
+  a.actid,
+  a.activity_name,
+  COUNT(DISTINCT fpi.FacID) AS faculty_count
+FROM Activity a
+JOIN Faculty_Participates_in fpi
+  ON fpi.actid = a.actid
+GROUP BY a.actid, a.activity_name
+HAVING COUNT(DISTINCT fpi.FacID) >= 2
+ORDER BY faculty_count DESC, a.activity_name ASC;",,"SELECT a.activity_name, COUNT(DISTINCT fpi.FacID) AS faculty_count
+FROM Faculty_Participates_in fpi
+JOIN Activity a ON fpi.actid = a.actid
+GROUP BY fpi.actid, a.activity_name
+HAVING faculty_count >= 2;","SELECT T2.activity_name, COUNT(T1.FacID)
+FROM Faculty_Participates_in AS T1
+JOIN Activity AS T2
+  ON T1.actid = T2.actid
+GROUP BY
+  T2.activity_name
+HAVING
+  COUNT(T1.FacID) >= 2;",
+353,activity_1,L4,1/3,"SELECT
+  s.StuID,
+  s.LName,
+  s.Fname,
+  f.Lname AS advisor_lname,
+  f.Fname AS advisor_fname
+FROM Student s
+JOIN Faculty f
+  ON s.Advisor = f.FacID
+WHERE f.Sex = 'F'
+ORDER BY s.LName ASC, s.Fname ASC, s.StuID ASC;",,"SELECT s.Fname AS student_fname, s.LName AS student_lname,
+       f.Fname AS advisor_fname, f.Lname AS advisor_lname
+FROM Student s
+JOIN Faculty f ON s.Advisor = f.FacID
+WHERE f.Sex = 'F';","SELECT
+  T1.Fname || ' ' || T1.LName AS 'Họ tên Sinh viên',
+  T2.Fname || ' ' || T2.LName AS 'Họ tên Cố vấn'
+FROM Student AS T1
+INNER JOIN Faculty AS T2
+  ON T1.Advisor = T2.FacID
+WHERE
+  T2.Sex = 'F';",
+358,activity_1,L6,1/3,"WITH distinct_names AS (
+  SELECT
+    pi.actid,
+    (s.LName || ' ' || s.Fname) AS full_name
+  FROM Participates_in pi
+  JOIN Student s
+    ON s.StuID = pi.stuid
+  GROUP BY pi.actid, full_name
+)
+SELECT
+  a.actid,
+  a.activity_name,
+  COALESCE(GROUP_CONCAT(d.full_name, '; '), '') AS student_list
+FROM Activity a
+LEFT JOIN distinct_names d
+  ON d.actid = a.actid
+GROUP BY a.actid, a.activity_name
+ORDER BY a.activity_name ASC;",,"SELECT 
+    A.activity_name,
+    GROUP_CONCAT(S.Fname || ' ' || S.Lname, '; ' ORDER BY S.Lname, S.Fname) AS student_list
+FROM Activity A
+JOIN Participates_in P ON A.actid = P.actid
+JOIN Student S ON P.stuid = S.StuID
+GROUP BY A.actid, A.activity_name
+ORDER BY A.activity_name;","SELECT
+  T.activity_name,
+  GROUP_CONCAT(T.student_full_name, '; ') AS student_list
+FROM (
+  SELECT
+    T1.activity_name,
+    T3.LName || ' ' || T3.Fname AS student_full_name
+  FROM Activity AS T1
+  JOIN Participates_in AS T2
+    ON T1.actid = T2.actid
+  JOIN Student AS T3
+    ON T2.stuid = T3.StuID
+  ORDER BY
+    T1.activity_name,
+    T3.LName,
+    T3.Fname
+) AS T
+GROUP BY
+  T.activity_name
+ORDER BY
+  T.activity_name;",
+361,activity_1,L7,1/3,"SELECT lname, fname
+FROM (
+  SELECT LName AS lname, Fname AS fname FROM Student
+  UNION
+  SELECT Lname AS lname, Fname AS fname FROM Faculty
+)
+EXCEPT
+SELECT lname, fname
+FROM (
+  SELECT LName AS lname, Fname AS fname FROM Student
+  INTERSECT
+  SELECT Lname AS lname, Fname AS fname FROM Faculty
+)
+ORDER BY lname ASC, fname ASC;",,"WITH StudentNames AS (
+    SELECT LName AS last_name, Fname AS first_name FROM Student
+    UNION
+    SELECT LName, Fname FROM Student
+),
+FacultyNames AS (
+    SELECT Lname AS last_name, Fname AS first_name FROM Faculty
+    UNION
+    SELECT Lname, Fname FROM Faculty
+)
+SELECT last_name, first_name FROM StudentNames
+EXCEPT
+SELECT last_name, first_name FROM FacultyNames
+UNION
+SELECT last_name, first_name FROM FacultyNames
+EXCEPT
+SELECT last_name, first_name FROM StudentNames;","WITH T AS (
+  SELECT LName FROM Student
+  UNION ALL
+  SELECT Lname FROM Faculty
+)
+SELECT LName
+FROM T
+GROUP BY LName
+HAVING count(*) = 1;",
+362,activity_1,L5,1/3,"SELECT DISTINCT
+  s.StuID,
+  s.LName,
+  s.Fname
+FROM Student s
+JOIN Participates_in pi
+  ON pi.stuid = s.StuID
+JOIN Activity a
+  ON a.actid = pi.actid
+WHERE a.activity_name IN ('Mountain Climbing', 'Bungee Jumping', 'Spelunking', 'Kayaking')
+ORDER BY s.LName ASC, s.Fname ASC, s.StuID ASC;",,"SELECT *
+FROM Student
+WHERE EXISTS (
+    SELECT 1
+    FROM Participates_in
+    JOIN Activity ON Participates_in.actid = Activity.actid
+    WHERE Participates_in.stuid = Student.StuID
+      AND Activity.activity_name IN ('Mountain Climbing', 'Bungee Jumping', 'Cave Exploration', 'Kayaking')
+);","SELECT DISTINCT
+  T1.Fname,
+  T1.LName
+FROM Student AS T1
+JOIN Participates_in AS T2
+  ON T1.StuID = T2.stuid
+JOIN Activity AS T3
+  ON T2.actid = T3.actid
+WHERE
+  T3.activity_name IN ('Mountain Climbing', 'Bungee Jumping', 'Caving', 'Kayaking')
+ORDER BY
+  T1.LName,
+  T1.Fname;",
+365,activity_1,L9,1/3,"SELECT
+  f.FacID,
+  f.Lname,
+  f.Fname,
+  f.Building,
+  f.Room
+FROM Faculty f
+LEFT JOIN Faculty_Participates_in fpi
+  ON fpi.FacID = f.FacID
+WHERE fpi.FacID IS NULL
+ORDER BY f.Lname ASC, f.Fname ASC, f.FacID ASC;",,"<think>
+1. Mục tiêu & grain
+   - Mục tiêu: Liệt kê các giảng viên chưa tham gia bất kỳ hoạt động nào, cùng thông tin tòa nhà và phòng làm việc của họ.
+   - Grain: Mỗi dòng tương ứng với một giảng viên (FacID).
+
+2. Gắn khái niệm vào schema
+   - ""Giảng viên"": bảng Faculty, các cột FacID, Fname, Lname.
+   - ""Tham gia hoạt động"": bảng Faculty_Participates_in, cột FacID và actid.
+   - ""Tòa nhà và phòng làm việc"": bảng Faculty, cột Building và Room.
+
+3. Khung truy vấn
+   - Anchor table: Faculty (alias f).
+   - SELECT: f.FacID, f.Fname, f.Lname, f.Building, f.Room.
+   - Filter: Loại bỏ các giảng viên có mặt trong bảng Faculty_Participates_in.
+
+4. Module logic
+   - Dùng NOT EXISTS với subquery từ bảng Faculty_Participates_in để lọc ra các giảng viên không tham gia hoạt động.
+   - Không cần JOIN thêm bảng khác vì thông tin đã đủ từ bảng Faculty.
+
+5. Hoàn thiện & kiểm tra
+   - Không yêu cầu sắp xếp cụ thể nên không cần ORDER BY.
+   - Tên cột đều tồn tại trong schema.
+   - SQLite hỗ trợ NOT EXISTS.
+</think>
+
+<sql>
+SELECT f.FacID, f.Fname, f.Lname, f.Building, f.Room
+FROM Faculty f
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM Faculty_Participates_in fpi
+    WHERE fpi.FacID = f.FacID
+);","SELECT
+  T1.Fname,
+  T1.Lname,
+  T1.Building,
+  T1.Room
+FROM Faculty AS T1
+LEFT JOIN Faculty_Participates_in AS T2
+  ON T1.FacID = T2.FacID
+WHERE
+  T2.FacID IS NULL;",
+366,activity_1,L9,1/3,"SELECT
+  s.StuID,
+  s.LName,
+  s.Fname,
+  s.Age,
+  s.Sex
+FROM Student s
+WHERE s.Advisor IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM Participates_in pi
+    WHERE pi.stuid = s.StuID
+  )
+ORDER BY s.LName ASC, s.Fname ASC, s.StuID ASC;",,"SELECT S.StuID, S.LName, S.Fname, S.Advisor
+FROM Student S
+WHERE S.Advisor IS NOT NULL
+  AND EXISTS (SELECT 1 FROM Faculty F WHERE F.FacID = S.Advisor)
+  AND NOT EXISTS (SELECT 1 FROM Participates_in P WHERE P.stuid = S.StuID)
+ORDER BY S.StuID;","SELECT
+  T1.Fname,
+  T1.LName
+FROM Student AS T1
+LEFT JOIN Participates_in AS T2
+  ON T1.StuID = T2.stuid
+WHERE
+  T2.stuid IS NULL AND T1.Advisor IS NOT NULL
+ORDER BY
+  T1.LName,
+  T1.Fname;",
+367,activity_1,L10,1/3,"SELECT
+  pi.actid,
+  a.activity_name,
+  pi.stuid,
+  s.LName,
+  s.Fname,
+  (
+    SELECT COUNT(DISTINCT pi2.actid)
+    FROM Participates_in pi2
+    WHERE pi2.stuid = pi.stuid
+      AND pi2.actid <> pi.actid
+  ) AS other_activity_count
+FROM Participates_in pi
+JOIN Student s
+  ON s.StuID = pi.stuid
+JOIN Activity a
+  ON a.actid = pi.actid
+ORDER BY a.activity_name ASC, s.LName ASC, s.Fname ASC, pi.stuid ASC;",,"WITH student_total AS (
+    SELECT p.stuid, COUNT(*) AS total_activities
+    FROM Participates_in p
+    GROUP BY p.stuid
+)
+SELECT a.activity_name, s.StuID, s.Lname, s.Fname, (st.total_activities - 1) AS other_activities_count
+FROM Participates_in p
+JOIN student_total st ON p.stuid = st.stuid
+JOIN Activity a ON p.actid = a.actid
+JOIN Student s ON p.stuid = s.StuID
+ORDER BY a.activity_name, s.StuID;","WITH StudentActivityCount AS (
+  SELECT stuid, COUNT(actid) AS total_activities
+  FROM Participates_in
+  GROUP BY stuid
+)
+SELECT
+  T3.activity_name,
+  T2.Fname,
+  T2.LName,
+  T4.total_activities - 1 AS other_activities_count
+FROM Participates_in AS T1
+JOIN Student AS T2
+  ON T1.stuid = T2.StuID
+JOIN Activity AS T3
+  ON T1.actid = T3.actid
+JOIN StudentActivityCount AS T4
+  ON T1.stuid = T4.stuid;",
+372,activity_1,L15,1/3,"WITH base AS (
+  SELECT
+    a.actid,
+    a.activity_name,
+    s.StuID,
+    s.Advisor
+  FROM Activity a
+  LEFT JOIN Participates_in pi
+    ON pi.actid = a.actid
+  LEFT JOIN Student s
+    ON s.StuID = pi.stuid
+), student_stats AS (
+  SELECT
+    actid,
+    activity_name,
+    COUNT(DISTINCT StuID) AS total_students,
+    COUNT(DISTINCT CASE WHEN Advisor IS NOT NULL THEN StuID END) AS advised_students
+  FROM base
+  GROUP BY actid, activity_name
+), advisor_join AS (
+  SELECT
+    b.actid,
+    COUNT(DISTINCT CASE WHEN b.Advisor IS NOT NULL THEN b.StuID END) AS advised_students,
+    COUNT(DISTINCT CASE WHEN b.Advisor IS NOT NULL AND fpi.FacID IS NOT NULL THEN b.StuID END) AS advised_and_advisor_also_participates
+  FROM base b
+  LEFT JOIN Faculty_Participates_in fpi
+    ON fpi.actid = b.actid
+   AND fpi.FacID = b.Advisor
+  GROUP BY b.actid
+)
+SELECT
+  ss.actid,
+  ss.activity_name,
+  CASE
+    WHEN ss.total_students = 0 THEN 0.0
+    ELSE CAST(ss.advised_students AS REAL) / ss.total_students
+  END AS pct_students_with_advisor,
+  CASE
+    WHEN aj.advised_students = 0 THEN 0.0
+    ELSE CAST(aj.advised_and_advisor_also_participates AS REAL) / aj.advised_students
+  END AS pct_advised_whose_advisor_also_participates
+FROM student_stats ss
+JOIN advisor_join aj
+  ON aj.actid = ss.actid
+ORDER BY
+  pct_advised_whose_advisor_also_participates DESC,
+  pct_students_with_advisor DESC,
+  ss.activity_name ASC;",,"WITH student_activity AS (
+    SELECT 
+        a.actid,
+        a.activity_name,
+        p.stuid,
+        s.Advisor,
+        CASE WHEN s.Advisor IS NOT NULL THEN 1 ELSE 0 END AS has_advisor_flag,
+        CASE WHEN s.Advisor IS NOT NULL AND f.FacID IS NOT NULL THEN 1 ELSE 0 END AS advisor_participates_flag
+    FROM Activity a
+    LEFT JOIN Participates_in p ON a.actid = p.actid
+    LEFT JOIN Student s ON p.stuid = s.StuID
+    LEFT JOIN Faculty_Participates_in f ON f.actid = a.actid AND f.FacID = s.Advisor
+)
+SELECT 
+    actid,
+    activity_name,
+    COUNT(stuid) AS total_students,
+    SUM(has_advisor_flag) AS students_with_advisor,
+    SUM(advisor_participates_flag) AS students_advisor_participates,
+    CASE 
+        WHEN COUNT(stuid) > 0 THEN 100.0 * SUM(has_advisor_flag) / COUNT(stuid) 
+        ELSE NULL 
+    END AS pct_has_advisor,
+    CASE 
+        WHEN SUM(has_advisor_flag) > 0 THEN 100.0 * SUM(advisor_participates_flag) / SUM(has_advisor_flag) 
+        ELSE NULL 
+    END AS pct_advisor_participates
+FROM student_activity
+GROUP BY actid, activity_name
+ORDER BY pct_advisor_participates DESC;","WITH StudentParticipation AS (
+  SELECT
+    T1.actid,
+    T2.StuID,
+    T2.Advisor AS AdvisorFacID
+  FROM Participates_in AS T1
+  JOIN Student AS T2
+    ON T1.stuid = T2.StuID
+), ActivityStats AS (
+  SELECT
+    T1.actid,
+    COUNT(T1.StuID) AS total_participants,
+    COUNT(T1.AdvisorFacID) AS participants_with_advisor,
+    COUNT(T2.FacID) AS participants_with_engaged_advisor
+  FROM StudentParticipation AS T1
+  LEFT JOIN Faculty_Participates_in AS T2
+    ON T1.actid = T2.actid
+    AND T1.AdvisorFacID = T2.FacID
+  GROUP BY
+    T1.actid
+)
+SELECT
+  T3.activity_name,
+  CASE
+    WHEN T4.total_participants = 0
+    THEN 0.0
+    ELSE CAST(T4.participants_with_advisor AS REAL) * 100.0 / T4.total_participants
+  END AS percentage_with_advisor,
+  CASE
+    WHEN T4.participants_with_advisor = 0
+    THEN 0.0
+    ELSE CAST(T4.participants_with_engaged_advisor AS REAL) * 100.0 / T4.participants_with_advisor
+  END AS percentage_advisor_also_participates
+FROM ActivityStats AS T4
+JOIN Activity AS T3
+  ON T4.actid = T3.actid
+ORDER BY
+  percentage_advisor_also_participates DESC;",
+389,apartment_rentals,L5,1/3,SELECT T2.building_full_name FROM Apartments AS T1 JOIN Apartment_Buildings AS T2 ON T1.building_id = T2.building_id WHERE T1.apt_type_code = 'Studio' GROUP BY T1.building_id ORDER BY COUNT(*) DESC LIMIT 1;,,"WITH studio_counts AS (
+    SELECT b.building_full_name, COUNT(*) AS studio_count
+    FROM Apartments a
+    JOIN Apartment_Buildings b ON a.building_id = b.building_id
+    WHERE a.apt_type_code = 'Studio'
+    GROUP BY a.building_id, b.building_full_name
+),
+ranked AS (
+    SELECT building_full_name, studio_count,
+           RANK() OVER (ORDER BY studio_count DESC) AS rnk
+    FROM studio_counts
+)
+SELECT building_full_name
+FROM ranked
+WHERE rnk = 1;",SELECT T2.building_full_name FROM Apartments AS T1 INNER JOIN Apartment_Buildings AS T2 ON T1.building_id = T2.building_id WHERE T1.apt_type_code = 'Studio' GROUP BY T2.building_full_name ORDER BY count(*) DESC LIMIT 1,
+390,apartment_rentals,L13,1/3,"SELECT guest_first_name, guest_last_name FROM Guests WHERE strftime('%Y', date_of_birth) = '1970';",,"WITH Guests_1970s AS (
+    SELECT
+        guest_id,
+        guest_first_name,
+        guest_last_name,
+        date_of_birth
+    FROM Guests
+    WHERE strftime('%Y', date_of_birth) BETWEEN '1970' AND '1979'
+)
+SELECT *
+FROM Guests_1970s
+ORDER BY guest_id;","SELECT
+  guest_first_name,
+  guest_last_name,
+  date_of_birth
+FROM Guests
+WHERE
+  STRFTIME('%Y', date_of_birth) BETWEEN '1970' AND '1979';",
+393,apartment_rentals,L12,1/3,"WITH RecentBookings AS (SELECT guest_id, booking_status_code, ROW_NUMBER() OVER(PARTITION BY guest_id ORDER BY booking_start_date DESC) as rn FROM Apartment_Bookings) SELECT T1.guest_first_name, T1.guest_last_name, T2.booking_status_code FROM Guests AS T1 JOIN RecentBookings AS T2 ON T1.guest_id = T2.guest_id WHERE T2.rn = 1;",,"WITH latest_booking AS (
+    SELECT 
+        guest_id,
+        apt_booking_id,
+        booking_status_code,
+        booking_start_date,
+        booking_end_date,
+        ROW_NUMBER() OVER (PARTITION BY guest_id ORDER BY booking_start_date DESC) AS rn
+    FROM Apartment_Bookings
+)
+SELECT 
+    g.guest_id,
+    g.gender_code,
+    g.guest_first_name,
+    g.guest_last_name,
+    g.date_of_birth,
+    lb.apt_booking_id,
+    lb.booking_status_code,
+    lb.booking_start_date,
+    lb.booking_end_date
+FROM Guests g
+LEFT JOIN latest_booking lb ON g.guest_id = lb.guest_id AND lb.rn = 1
+ORDER BY g.guest_id;","WITH RankedBookings AS (
+  SELECT
+    guest_id,
+    booking_status_code,
+    booking_start_date,
+    ROW_NUMBER() OVER (PARTITION BY guest_id ORDER BY booking_start_date DESC) AS rn
+  FROM Apartment_Bookings
+)
+SELECT
+  g.guest_id,
+  g.guest_first_name,
+  g.guest_last_name,
+  rb.booking_status_code,
+  rb.booking_start_date
+FROM Guests AS g
+JOIN RankedBookings AS rb
+  ON g.guest_id = rb.guest_id
+WHERE
+  rb.rn = 1
+ORDER BY
+  g.guest_id;",
+405,apartment_rentals,L6,1/3,"SELECT T3.building_full_name, SUM(CASE WHEN T2.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS confirmed_count, SUM(CASE WHEN T2.booking_status_code = 'Provisional' THEN 1 ELSE 0 END) AS provisional_count FROM Apartments AS T1 JOIN Apartment_Bookings AS T2 ON T1.apt_id = T2.apt_id JOIN Apartment_Buildings AS T3 ON T1.building_id = T3.building_id GROUP BY T3.building_id;",,"SELECT 
+    b.building_id,
+    b.building_short_name AS building_name,
+    COUNT(DISTINCT CASE WHEN ab.booking_status_code = 'Confirmed' THEN a.apt_id END) AS confirmed_apartments,
+    COUNT(DISTINCT CASE WHEN ab.booking_status_code = 'Provisional' THEN a.apt_id END) AS provisional_apartments
+FROM Apartment_Buildings b
+LEFT JOIN Apartments a ON b.building_id = a.building_id
+LEFT JOIN Apartment_Bookings ab ON a.apt_id = ab.apt_id
+GROUP BY b.building_id, b.building_short_name
+ORDER BY b.building_id;","SELECT
+  T1.building_full_name,
+  COUNT(CASE WHEN T3.booking_status_code = 'Confirmed' THEN 1 END) AS Confirmed_Bookings,
+  COUNT(CASE WHEN T3.booking_status_code = 'Provisional' THEN 1 END) AS Provisional_Bookings
+FROM Apartment_Buildings AS T1
+LEFT JOIN Apartments AS T2
+  ON T1.building_id = T2.building_id
+LEFT JOIN Apartment_Bookings AS T3
+  ON T2.apt_id = T3.apt_id
+GROUP BY
+  T1.building_full_name
+ORDER BY
+  T1.building_full_name;",
+411,apartment_rentals,L12,1/3,"SELECT guest_id, MIN(booking_start_date) OVER(PARTITION BY guest_id) FROM Apartment_Bookings;",,"WITH first_bookings AS (
+    SELECT 
+        guest_id,
+        MIN(booking_start_date) AS first_booking_date
+    FROM Apartment_Bookings
+    GROUP BY guest_id
+)
+SELECT 
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    fb.first_booking_date
+FROM Guests g
+LEFT JOIN first_bookings fb ON g.guest_id = fb.guest_id
+ORDER BY g.guest_id;","SELECT
+  T1.guest_first_name,
+  T1.guest_last_name,
+  MIN(T2.booking_start_date) AS luot_dat_phong_dau_tien
+FROM Guests AS T1
+JOIN Apartment_Bookings AS T2
+  ON T1.guest_id = T2.guest_id
+GROUP BY
+  T1.guest_id
+ORDER BY
+  luot_dat_phong_dau_tien;",
+412,apartment_rentals,L9,1/3,SELECT building_full_name FROM Apartment_Buildings WHERE building_id NOT IN (SELECT building_id FROM Apartments WHERE bedroom_count < 2);,,"WITH ViolatingBuildings AS (
+    SELECT DISTINCT ab.building_id
+    FROM Apartments a
+    INNER JOIN Apartment_Buildings ab ON a.building_id = ab.building_id
+    WHERE a.bedroom_count < 2
+)
+SELECT building_id, building_short_name, building_full_name
+FROM Apartment_Buildings
+EXCEPT
+SELECT building_id, building_short_name, building_full_name
+FROM Apartment_Buildings
+WHERE building_id IN (SELECT building_id FROM ViolatingBuildings);","SELECT
+  T2.building_full_name
+FROM Apartments AS T1
+JOIN Apartment_Buildings AS T2
+  ON T1.building_id = T2.building_id
+GROUP BY
+  T1.building_id
+HAVING
+  MIN(T1.bedroom_count) >= 2;",
+423,apartment_rentals,L10,1/3,"SELECT DISTINCT g.guest_first_name, g.guest_last_name
+FROM Guests g
+JOIN Apartment_Bookings ab ON g.guest_id = ab.guest_id
+JOIN Apartments a ON ab.apt_id = a.apt_id
+WHERE NOT EXISTS (
+    SELECT 1 
+    FROM Apartment_Bookings ab_prev
+    JOIN Apartments a_prev ON ab_prev.apt_id = a_prev.apt_id
+    WHERE ab_prev.guest_id = g.guest_id
+      AND ab_prev.booking_start_date < ab.booking_start_date
+      AND a_prev.bedroom_count >= a.bedroom_count
+)
+AND EXISTS (
+    SELECT 1 FROM Apartment_Bookings ab2 WHERE ab2.guest_id = g.guest_id AND ab2.apt_booking_id != ab.apt_booking_id
+);",,"WITH ordered_bookings AS (
+    SELECT 
+        b.guest_id,
+        b.apt_booking_id,
+        b.booking_start_date,
+        a.bedroom_count
+    FROM Apartment_Bookings b
+    INNER JOIN Apartments a ON b.apt_id = a.apt_id
+),
+with_prev AS (
+    SELECT 
+        guest_id,
+        bedroom_count,
+        LAG(bedroom_count) OVER (PARTITION BY guest_id ORDER BY booking_start_date, apt_booking_id) AS prev_bedroom_count
+    FROM ordered_bookings
+),
+check_increase AS (
+    SELECT 
+        guest_id,
+        CASE 
+            WHEN prev_bedroom_count IS NULL THEN 1
+            WHEN bedroom_count > prev_bedroom_count THEN 1
+            ELSE 0 
+        END AS is_increasing
+    FROM with_prev
+),
+guest_summary AS (
+    SELECT 
+        guest_id,
+        MIN(is_increasing) AS all_increasing
+    FROM check_increase
+    GROUP BY guest_id
+    HAVING MIN(is_increasing) = 1
+)
+SELECT 
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name
+FROM guest_summary gs
+INNER JOIN Guests g ON gs.guest_id = g.guest_id;","WITH RankedBookings AS (
+  SELECT
+    T1.guest_id,
+    T1.guest_first_name,
+    T1.guest_last_name,
+    T3.bedroom_count,
+    MAX(T3.bedroom_count) OVER (PARTITION BY T1.guest_id ORDER BY T2.booking_start_date ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS max_bedrooms_in_previous_bookings
+  FROM Guests AS T1
+  INNER JOIN Apartment_Bookings AS T2
+    ON T1.guest_id = T2.guest_id
+  INNER JOIN Apartments AS T3
+    ON T2.apt_id = T3.apt_id
+)
+SELECT
+  guest_first_name,
+  guest_last_name
+FROM RankedBookings
+GROUP BY
+  guest_id,
+  guest_first_name,
+  guest_last_name
+HAVING
+  COUNT(guest_id) > 1 AND COUNT(CASE WHEN bedroom_count <= max_bedrooms_in_previous_bookings THEN 1 END) = 0;",
+426,apartment_rentals,L15,1/3,"SELECT b.building_full_name
+FROM Apartment_Buildings b
+WHERE NOT EXISTS (
+    SELECT 1 FROM Apartments a 
+    WHERE a.building_id = b.building_id
+    AND a.apt_id NOT IN (
+        SELECT apt_id FROM Apartment_Bookings 
+        WHERE (strftime('%Y-%m', booking_start_date) <= '2016-10' 
+               AND strftime('%Y-%m', booking_end_date) >= '2016-10')
+    )
+);",,"WITH booked_apartments AS (
+    SELECT DISTINCT apt_id
+    FROM Apartment_Bookings
+    WHERE DATE(booking_start_date) <= '2016-10-31' 
+      AND DATE(booking_end_date) >= '2016-10-01'
+)
+SELECT 
+    b.building_id,
+    b.building_short_name
+FROM Apartment_Buildings b
+JOIN Apartments a ON b.building_id = a.building_id
+LEFT JOIN booked_apartments ba ON a.apt_id = ba.apt_id
+GROUP BY b.building_id, b.building_short_name
+HAVING COUNT(DISTINCT a.apt_id) = COUNT(DISTINCT ba.apt_id)
+   AND COUNT(DISTINCT a.apt_id) > 0
+ORDER BY b.building_id;","WITH TotalAptsPerBuilding AS (
+  SELECT
+    T1.building_id,
+    COUNT(T1.apt_id) AS total_apts
+  FROM Apartments AS T1
+  GROUP BY
+    T1.building_id
+), BookedAptsInOct AS (
+  SELECT
+    T1.building_id,
+    COUNT(DISTINCT T1.apt_id) AS num_booked_apts
+  FROM Apartments AS T1
+  JOIN Apartment_Bookings AS T2
+    ON T1.apt_id = T2.apt_id
+  WHERE
+    T2.booking_start_date < '2016-11-01' AND T2.booking_end_date >= '2016-10-01'
+  GROUP BY
+    T1.building_id
+)
+SELECT
+  T3.building_full_name
+FROM BookedAptsInOct AS T1
+JOIN TotalAptsPerBuilding AS T2
+  ON T1.building_id = T2.building_id
+JOIN Apartment_Buildings AS T3
+  ON T1.building_id = T3.building_id
+WHERE
+  T1.num_booked_apts = T2.total_apts;",
+429,apartment_rentals,L12,1/3,"SELECT 
+  guest_first_name, 
+  gender_code,
+  julianday('now') - julianday(date_of_birth) AS age_in_days,
+  (julianday(date_of_birth) - MIN(julianday(date_of_birth)) OVER(PARTITION BY gender_code)) AS days_younger_than_oldest,
+  (MAX(julianday(date_of_birth)) OVER(PARTITION BY gender_code) - julianday(date_of_birth)) AS days_older_than_youngest
+FROM Guests;",,"SELECT 
+    guest_id,
+    gender_code,
+    age,
+    age - MIN(age) OVER (PARTITION BY gender_code) AS gap_to_youngest,
+    MAX(age) OVER (PARTITION BY gender_code) - age AS gap_to_oldest
+FROM (
+    SELECT 
+        guest_id,
+        gender_code,
+        CAST(strftime('%Y', CURRENT_DATE) AS INTEGER) - CAST(strftime('%Y', date_of_birth) AS INTEGER) AS age
+    FROM Guests
+) AS t
+ORDER BY guest_id;","WITH GuestAges AS (
+  SELECT
+    T1.guest_first_name,
+    T1.guest_last_name,
+    T1.gender_code,
+    CAST(strftime('%Y', 'now') AS INTEGER) - CAST(strftime('%Y', T1.date_of_birth) AS INTEGER) AS age
+  FROM Guests AS T1
+), GuestAgeWithBounds AS (
+  SELECT
+    T2.guest_first_name,
+    T2.guest_last_name,
+    T2.gender_code,
+    T2.age,
+    MIN(T2.age) OVER (PARTITION BY T2.gender_code) AS youngest_age_in_group,
+    MAX(T2.age) OVER (PARTITION BY T2.gender_code) AS oldest_age_in_group
+  FROM GuestAges AS T2
+)
+SELECT
+  T3.guest_first_name,
+  T3.guest_last_name,
+  T3.age - T3.youngest_age_in_group AS khoang_cach_voi_nguoi_tre_nhat,
+  T3.oldest_age_in_group - T3.age AS khoang_cach_voi_nguoi_gia_nhat
+FROM GuestAgeWithBounds AS T3
+ORDER BY
+  T3.gender_code,
+  T3.guest_last_name,
+  T3.guest_first_name;",
+431,apartment_rentals,L15,1/3,"SELECT 
+  b.building_manager,
+  SUM(a.room_count) * (CAST(SUM(CASE WHEN ab.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS REAL) / COUNT(ab.apt_booking_id)) AS potential_score
+FROM Apartment_Buildings b
+JOIN Apartments a ON b.building_id = a.building_id
+LEFT JOIN Apartment_Bookings ab ON a.apt_id = ab.apt_id
+GROUP BY b.building_manager
+ORDER BY potential_score DESC;",,"WITH total_rooms_per_manager AS (
+    SELECT 
+        ab.building_manager, 
+        COALESCE(SUM(CAST(a.room_count AS INTEGER)), 0) AS total_rooms
+    FROM Apartment_Buildings ab
+    LEFT JOIN Apartments a ON ab.building_id = a.building_id
+    GROUP BY ab.building_manager
+),
+booking_stats_per_manager AS (
+    SELECT 
+        ab.building_manager,
+        COUNT(abk.apt_booking_id) AS total_bookings,
+        SUM(CASE WHEN abk.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS confirmed_bookings
+    FROM Apartment_Buildings ab
+    LEFT JOIN Apartments a ON ab.building_id = a.building_id
+    LEFT JOIN Apartment_Bookings abk ON a.apt_id = abk.apt_id
+    GROUP BY ab.building_manager
+)
+SELECT 
+    tr.building_manager,
+    tr.total_rooms,
+    CASE 
+        WHEN bs.total_bookings = 0 THEN 0.0
+        ELSE 1.0 * bs.confirmed_bookings / bs.total_bookings 
+    END AS booking_success_rate,
+    tr.total_rooms * (CASE WHEN bs.total_bookings = 0 THEN 0.0 ELSE 1.0 * bs.confirmed_bookings / bs.total_bookings END) AS potential_revenue
+FROM total_rooms_per_manager tr
+INNER JOIN booking_stats_per_manager bs ON tr.building_manager = bs.building_manager
+ORDER BY potential_revenue DESC;","WITH ManagerRoomCount AS (
+  SELECT
+    T1.building_manager,
+    SUM(CAST(T2.room_count AS INTEGER)) AS total_managed_rooms
+  FROM Apartment_Buildings AS T1
+  JOIN Apartments AS T2
+    ON T1.building_id = T2.building_id
+  GROUP BY
+    T1.building_manager
+), ManagerBookingStats AS (
+  SELECT
+    T1.building_manager,
+    COUNT(T3.apt_booking_id) AS total_bookings,
+    SUM(CASE WHEN T3.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS successful_bookings
+  FROM Apartment_Buildings AS T1
+  JOIN Apartments AS T2
+    ON T1.building_id = T2.building_id
+  JOIN Apartment_Bookings AS T3
+    ON T2.apt_id = T3.apt_id
+  GROUP BY
+    T1.building_manager
+)
+SELECT
+  T1.building_manager,
+  COALESCE(T1.total_managed_rooms * (
+    COALESCE(T2.successful_bookings, 0) * 1.0 / NULLIF(COALESCE(T2.total_bookings, 0), 0)
+  ), 0) AS potential_revenue_score
+FROM ManagerRoomCount AS T1
+LEFT JOIN ManagerBookingStats AS T2
+  ON T1.building_manager = T2.building_manager
+ORDER BY
+  potential_revenue_score DESC;",
+432,apartment_rentals,L11,1/3,"WITH BuildingStats AS (
+  SELECT 
+    building_id, 
+    building_full_name, 
+    SUBSTR(building_address, -8, 2) AS state, -- Giả định bang nằm cuối địa chỉ
+    COUNT(*) AS apt_count
+  FROM Apartments a
+  JOIN Apartment_Buildings b ON a.building_id = b.building_id
+  GROUP BY a.building_id
+)
+SELECT 
+  bs1.building_full_name, 
+  bs2.building_full_name
+FROM BuildingStats bs1
+JOIN BuildingStats bs2 ON bs1.apt_count = bs2.apt_count 
+  AND bs1.state = bs2.state 
+  AND bs1.building_id < bs2.building_id;",,"WITH building_stats AS (
+    SELECT 
+        b.building_id,
+        CASE 
+            WHEN INSTR(b.building_address, ',') > 0 
+            THEN UPPER(TRIM(SUBSTR(TRIM(SUBSTR(b.building_address, INSTR(b.building_address, ',') + 1)), 1, 2)))
+            ELSE NULL 
+        END AS state,
+        COUNT(a.apt_id) AS apartment_count
+    FROM Apartment_Buildings b
+    LEFT JOIN Apartments a ON b.building_id = a.building_id
+    GROUP BY b.building_id
+)
+SELECT 
+    bs1.building_id AS building_id1,
+    bs2.building_id AS building_id2,
+    bs1.apartment_count,
+    bs1.state
+FROM building_stats bs1
+INNER JOIN building_stats bs2 
+    ON bs1.state = bs2.state 
+    AND bs1.apartment_count = bs2.apartment_count
+    AND bs1.building_id < bs2.building_id
+ORDER BY bs1.building_id, bs2.building_id;","WITH BuildingStats AS (
+  SELECT
+    T1.building_id,
+    T1.building_full_name,
+    SUBSTR(T1.building_address, INSTR(T1.building_address, ',') + 2, 2) AS state,
+    COUNT(T2.apt_id) AS apartment_count
+  FROM Apartment_Buildings AS T1
+  JOIN Apartments AS T2
+    ON T1.building_id = T2.building_id
+  GROUP BY
+    T1.building_id,
+    T1.building_full_name,
+    state
+)
+SELECT
+  T1.building_full_name AS building_1,
+  T2.building_full_name AS building_2,
+  T1.state,
+  T1.apartment_count
+FROM BuildingStats AS T1
+JOIN BuildingStats AS T2
+  ON T1.state = T2.state AND T1.apartment_count = T2.apartment_count AND T1.building_id < T2.building_id;",
+438,apartment_rentals,L4,1/3,"SELECT ab.apt_booking_id, g.guest_first_name, g.guest_last_name, ab.booking_status_code, ab.booking_start_date, ab.booking_end_date FROM Apartment_Bookings ab JOIN Guests g ON g.guest_id = ab.guest_id ORDER BY ab.booking_start_date, ab.apt_booking_id;",,"SELECT 
+    b.apt_booking_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    b.booking_start_date,
+    b.booking_end_date,
+    (JULIANDAY(b.booking_end_date) - JULIANDAY(b.booking_start_date)) AS stay_duration_days
+FROM Apartment_Bookings b
+JOIN Guests g ON b.guest_id = g.guest_id
+ORDER BY b.apt_booking_id;","SELECT
+  T1.apt_booking_id,
+  T2.guest_first_name || ' ' || T2.guest_last_name AS guest_full_name,
+  T1.booking_start_date,
+  T1.booking_end_date
+FROM Apartment_Bookings AS T1
+INNER JOIN Guests AS T2
+  ON T1.guest_id = T2.guest_id;",
+439,apartment_rentals,L5,1/3,"SELECT b.building_short_name, COUNT(DISTINCT ab.guest_id) AS distinct_guest_count FROM Apartment_Buildings b JOIN Apartments a ON a.building_id = b.building_id LEFT JOIN Apartment_Bookings ab ON ab.apt_id = a.apt_id GROUP BY b.building_id ORDER BY distinct_guest_count DESC, b.building_short_name;",,"SELECT 
+    AB.building_id,
+    AB.building_short_name AS building_name,
+    COUNT(DISTINCT BK.guest_id) AS distinct_guest_count
+FROM Apartment_Buildings AB
+LEFT JOIN Apartments AP ON AB.building_id = AP.building_id
+LEFT JOIN Apartment_Bookings BK ON AP.apt_id = BK.apt_id
+GROUP BY AB.building_id, AB.building_short_name
+ORDER BY AB.building_id;","SELECT
+  T1.building_full_name,
+  COUNT(DISTINCT T3.guest_id) AS number_of_distinct_guests
+FROM Apartment_Buildings AS T1
+JOIN Apartments AS T2
+  ON T1.building_id = T2.building_id
+JOIN Apartment_Bookings AS T3
+  ON T2.apt_id = T3.apt_id
+GROUP BY
+  T1.building_full_name
+ORDER BY
+  number_of_distinct_guests DESC;",
+440,apartment_rentals,L5,1/3,"SELECT ab.apt_booking_id, b.building_short_name, a.apt_number, g.guest_first_name, g.guest_last_name, ab.booking_start_date, ab.booking_end_date FROM Apartment_Bookings ab JOIN Apartments a ON a.apt_id = ab.apt_id JOIN Apartment_Buildings b ON b.building_id = a.building_id JOIN Guests g ON g.guest_id = ab.guest_id WHERE ab.booking_status_code = 'Confirmed' ORDER BY ab.booking_start_date, ab.apt_booking_id;",,"SELECT 
+    b.apt_booking_id,
+    ab.building_full_name,
+    a.apt_number,
+    g.guest_first_name || ' ' || g.guest_last_name AS guest_name
+FROM Apartment_Bookings b
+JOIN Apartments a ON b.apt_id = a.apt_id
+JOIN Apartment_Buildings ab ON a.building_id = ab.building_id
+JOIN Guests g ON b.guest_id = g.guest_id
+WHERE b.booking_status_code = 'Confirmed';","SELECT
+  T3.building_full_name,
+  T2.apt_number,
+  T4.guest_first_name || ' ' || T4.guest_last_name AS guest_name
+FROM Apartment_Bookings AS T1
+INNER JOIN Apartments AS T2
+  ON T1.apt_id = T2.apt_id
+INNER JOIN Apartment_Buildings AS T3
+  ON T2.building_id = T3.building_id
+INNER JOIN Guests AS T4
+  ON T1.guest_id = T4.guest_id
+WHERE
+  T1.booking_status_code = 'Confirmed';",
+442,apartment_rentals,L6,1/3,"SELECT b.building_short_name, COALESCE(GROUP_CONCAT(a.apt_number, '; '), 'không có') AS apartment_list FROM Apartment_Buildings b LEFT JOIN Apartments a ON a.building_id = b.building_id GROUP BY b.building_id ORDER BY b.building_short_name;",,"SELECT 
+    b.building_id,
+    b.building_short_name,
+    COALESCE(GROUP_CONCAT(a.apt_number, ';'), 'không có') AS apartment_list
+FROM Apartment_Buildings b
+LEFT JOIN Apartments a ON b.building_id = a.building_id
+GROUP BY b.building_id, b.building_short_name
+ORDER BY b.building_id;","SELECT
+  T1.building_full_name,
+  IFNULL(GROUP_CONCAT(T2.apt_number, ';'), 'không có') AS danh_sach_so_can_ho
+FROM Apartment_Buildings AS T1
+LEFT JOIN Apartments AS T2
+  ON T1.building_id = T2.building_id
+GROUP BY
+  T1.building_id,
+  T1.building_full_name
+ORDER BY
+  T1.building_full_name;",
+443,apartment_rentals,L6,1/3,"SELECT b.building_short_name, SUM(CASE WHEN a.apt_type_code = 'Studio' THEN 1 ELSE 0 END) AS studio_count, SUM(CASE WHEN a.apt_type_code = 'Flat' THEN 1 ELSE 0 END) AS flat_count, SUM(CASE WHEN a.apt_type_code = 'Duplex' THEN 1 ELSE 0 END) AS duplex_count FROM Apartment_Buildings b LEFT JOIN Apartments a ON a.building_id = b.building_id GROUP BY b.building_id ORDER BY b.building_short_name;",,"WITH BuildingApartmentCounts AS (
+    SELECT
+        b.building_id,
+        b.building_short_name,
+        COUNT(CASE WHEN a.apt_type_code = 'Studio' THEN 1 END) AS studio_count,
+        COUNT(CASE WHEN a.apt_type_code = 'Flat' THEN 1 END) AS flat_count,
+        COUNT(CASE WHEN a.apt_type_code = 'Duplex' THEN 1 END) AS duplex_count
+    FROM Apartment_Buildings b
+    LEFT JOIN Apartments a ON b.building_id = a.building_id
+    GROUP BY b.building_id, b.building_short_name
+)
+SELECT 
+    building_id,
+    building_short_name,
+    studio_count,
+    flat_count,
+    duplex_count
+FROM BuildingApartmentCounts
+ORDER BY building_id;","SELECT
+  T1.building_full_name,
+  COUNT(CASE WHEN T2.apt_type_code = 'Studio' THEN 1 END) AS studio_count,
+  COUNT(CASE WHEN T2.apt_type_code = 'Flat' THEN 1 END) AS flat_count,
+  COUNT(CASE WHEN T2.apt_type_code = 'Duplex' THEN 1 END) AS duplex_count
+FROM Apartment_Buildings AS T1
+JOIN Apartments AS T2
+  ON T1.building_id = T2.building_id
+GROUP BY
+  T1.building_id,
+  T1.building_full_name
+ORDER BY
+  T1.building_full_name;",
+446,apartment_rentals,L7,1/3,"SELECT building_manager AS person_name, 'Quản lý' AS role FROM Apartment_Buildings UNION SELECT guest_first_name || ' ' || guest_last_name AS person_name, 'Khách' AS role FROM Guests ORDER BY role, person_name;",,"WITH Managers AS (
+    SELECT DISTINCT
+        building_manager AS person_name,
+        'Building Manager' AS person_type
+    FROM Apartment_Buildings
+),
+GuestsList AS (
+    SELECT
+        guest_first_name || ' ' || guest_last_name AS person_name,
+        'Guest' AS person_type
+    FROM Guests
+)
+SELECT person_name, person_type FROM Managers
+UNION ALL
+SELECT person_name, person_type FROM GuestsList;","SELECT DISTINCT
+  T1.building_manager AS person_name,
+  'Người quản lý' AS person_type
+FROM Apartment_Buildings AS T1
+UNION ALL
+SELECT
+  T2.guest_first_name || ' ' || T2.guest_last_name AS person_name,
+  'Khách' AS person_type
+FROM Guests AS T2
+ORDER BY
+  person_type,
+  person_name;",
+450,apartment_rentals,L8,1/3,"WITH confirmed AS (SELECT guest_id, CAST(julianday(booking_end_date) - julianday(booking_start_date) AS REAL) AS stay_days FROM Apartment_Bookings WHERE booking_status_code = 'Confirmed'), agg AS (SELECT guest_id, SUM(stay_days) AS total_days FROM confirmed GROUP BY guest_id) SELECT g.guest_id, g.guest_first_name, g.guest_last_name, agg.total_days FROM agg JOIN Guests g ON g.guest_id = agg.guest_id ORDER BY agg.total_days DESC, g.guest_id LIMIT 5;",,"WITH confirmed_bookings AS (
+    SELECT 
+        ab.guest_id,
+        CAST(JULIANDAY(ab.booking_end_date) - JULIANDAY(ab.booking_start_date) AS INTEGER) AS days_stayed
+    FROM Apartment_Bookings ab
+    WHERE ab.booking_status_code = 'Confirmed'
+),
+guest_total_days AS (
+    SELECT 
+        cb.guest_id,
+        SUM(cb.days_stayed) AS total_days
+    FROM confirmed_bookings cb
+    GROUP BY cb.guest_id
+)
+SELECT 
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    gtd.total_days
+FROM guest_total_days gtd
+JOIN Guests g ON gtd.guest_id = g.guest_id
+ORDER BY gtd.total_days DESC
+LIMIT 5;","SELECT
+  T2.guest_first_name,
+  T2.guest_last_name,
+  SUM(julianday(T1.booking_end_date) - julianday(T1.booking_start_date)) AS total_stay_days
+FROM Apartment_Bookings AS T1
+JOIN Guests AS T2
+  ON T1.guest_id = T2.guest_id
+WHERE
+  T1.booking_status_code = 'Confirmed'
+GROUP BY
+  T1.guest_id
+ORDER BY
+  total_stay_days DESC
+LIMIT 5;",
+451,apartment_rentals,L8,1/3,"WITH latest AS (SELECT apt_id, MAX(status_date) AS latest_date FROM View_Unit_Status GROUP BY apt_id) SELECT a.apt_id, a.apt_number, b.building_short_name, v.status_date, v.available_yn FROM Apartments a JOIN Apartment_Buildings b ON b.building_id = a.building_id LEFT JOIN latest l ON l.apt_id = a.apt_id LEFT JOIN View_Unit_Status v ON v.apt_id = a.apt_id AND v.status_date = l.latest_date ORDER BY b.building_short_name, a.apt_id;",,"WITH LatestAvailable AS (
+    SELECT apt_id, MAX(status_date) AS latest_status_date
+    FROM View_Unit_Status
+    WHERE available_yn = 1
+    GROUP BY apt_id
+)
+SELECT A.apt_id, L.latest_status_date
+FROM Apartments A
+LEFT JOIN LatestAvailable L ON A.apt_id = L.apt_id
+ORDER BY A.apt_id;","SELECT
+  T1.apt_id,
+  MAX(T1.status_date) AS thoi_diem_trong_gan_nhat
+FROM View_Unit_Status AS T1
+WHERE
+  T1.available_yn = 1
+GROUP BY
+  T1.apt_id
+ORDER BY
+  T1.apt_id;",
+458,apartment_rentals,L10,1/3,"SELECT a.apt_id, a.apt_number, b.building_short_name, a.bedroom_count FROM Apartments a JOIN Apartment_Buildings b ON b.building_id = a.building_id WHERE a.bedroom_count > (SELECT AVG(a2.bedroom_count) FROM Apartments a2 WHERE a2.building_id = a.building_id) ORDER BY b.building_short_name, a.bedroom_count DESC, a.apt_id;",,"WITH building_avg AS (
+    SELECT building_id, AVG(bedroom_count) AS avg_bedroom
+    FROM Apartments
+    GROUP BY building_id
+)
+SELECT A.apt_id, A.building_id, A.bedroom_count, B.avg_bedroom
+FROM Apartments A
+INNER JOIN building_avg B ON A.building_id = B.building_id
+WHERE A.bedroom_count > B.avg_bedroom;","WITH BuildingAvgBedrooms AS (
+  SELECT
+    T1.building_id,
+    AVG(T1.bedroom_count) AS avg_bedrooms_for_building
+  FROM Apartments AS T1
+  GROUP BY
+    T1.building_id
+)
+SELECT
+  T2.apt_id,
+  T2.apt_number,
+  T2.building_id,
+  T2.bedroom_count
+FROM Apartments AS T2
+JOIN BuildingAvgBedrooms AS T3
+  ON T2.building_id = T3.building_id
+WHERE
+  T2.bedroom_count > T3.avg_bedrooms_for_building;",
+459,apartment_rentals,L10,1/3,"SELECT g.guest_id, g.guest_first_name, g.guest_last_name, (SELECT MAX(CAST(julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS REAL)) FROM Apartment_Bookings ab WHERE ab.guest_id = g.guest_id AND ab.booking_status_code = 'Confirmed') AS longest_confirmed_days FROM Guests g ORDER BY (longest_confirmed_days IS NULL) ASC, longest_confirmed_days DESC, g.guest_id;",,"WITH Confirmed_Bookings AS (
+    SELECT 
+        guest_id,
+        CAST(JULIANDAY(DATE(booking_end_date)) - JULIANDAY(DATE(booking_start_date)) AS INTEGER) AS duration_days
+    FROM Apartment_Bookings
+    WHERE booking_status_code = 'Confirmed'
+)
+SELECT 
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    MAX(cb.duration_days) AS longest_confirmed_stay_days
+FROM Guests g
+LEFT JOIN Confirmed_Bookings cb ON g.guest_id = cb.guest_id
+GROUP BY g.guest_id, g.guest_first_name, g.guest_last_name
+ORDER BY g.guest_id;","SELECT
+  T1.guest_first_name,
+  T1.guest_last_name,
+  MAX(CAST(julianday(T2.booking_end_date) - julianday(T2.booking_start_date) AS INTEGER))
+FROM Guests AS T1
+LEFT JOIN Apartment_Bookings AS T2
+  ON T1.guest_id = T2.guest_id AND T2.booking_status_code = 'Confirmed'
+GROUP BY
+  T1.guest_id,
+  T1.guest_first_name,
+  T1.guest_last_name
+ORDER BY
+  T1.guest_last_name,
+  T1.guest_first_name;",
+461,apartment_rentals,L10,1/3,"SELECT b.building_short_name, SUM(CASE WHEN CAST(julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS REAL) > (SELECT AVG(CAST(julianday(ab2.booking_end_date) - julianday(ab2.booking_start_date) AS REAL)) FROM Apartment_Bookings ab2 JOIN Apartments a2 ON a2.apt_id = ab2.apt_id WHERE a2.building_id = b.building_id) THEN 1 ELSE 0 END) AS longer_than_building_avg_count FROM Apartment_Buildings b JOIN Apartments a ON a.building_id = b.building_id JOIN Apartment_Bookings ab ON ab.apt_id = a.apt_id GROUP BY b.building_id ORDER BY longer_than_building_avg_count DESC, b.building_short_name;",,"WITH BookingInfo AS (
+    SELECT ab.apt_booking_id,
+           ap.building_id,
+           julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS duration_days
+    FROM Apartment_Bookings ab
+    JOIN Apartments ap ON ab.apt_id = ap.apt_id
+    WHERE ab.booking_start_date IS NOT NULL AND ab.booking_end_date IS NOT NULL
+),
+BuildingAvg AS (
+    SELECT building_id,
+           AVG(duration_days) AS avg_duration
+    FROM BookingInfo
+    GROUP BY building_id
+),
+AboveAvg AS (
+    SELECT bi.building_id,
+           bi.apt_booking_id
+    FROM BookingInfo bi
+    JOIN BuildingAvg ba ON bi.building_id = ba.building_id
+    WHERE bi.duration_days > ba.avg_duration
+)
+SELECT b.building_id,
+       COUNT(aa.apt_booking_id) AS count_bookings_above_avg
+FROM Apartment_Buildings b
+LEFT JOIN AboveAvg aa ON b.building_id = aa.building_id
+GROUP BY b.building_id
+ORDER BY b.building_id;","WITH BookingDurations AS (
+  SELECT
+    T2.building_id,
+    T1.apt_booking_id,
+    julianday(T1.booking_end_date) - julianday(T1.booking_start_date) AS stay_duration
+  FROM Apartment_Bookings AS T1
+  INNER JOIN Apartments AS T2
+    ON T1.apt_id = T2.apt_id
+), AvgBuildingStay AS (
+  SELECT
+    T.building_id,
+    AVG(T.stay_duration) AS avg_duration
+  FROM BookingDurations AS T
+  GROUP BY
+    T.building_id
+)
+SELECT
+  T3.building_full_name,
+  COUNT(T1.apt_booking_id)
+FROM BookingDurations AS T1
+INNER JOIN AvgBuildingStay AS T2
+  ON T1.building_id = T2.building_id
+INNER JOIN Apartment_Buildings AS T3
+  ON T1.building_id = T3.building_id
+WHERE
+  T1.stay_duration > T2.avg_duration
+GROUP BY
+  T3.building_full_name;",
+465,apartment_rentals,L12,1/3,"WITH c AS (SELECT b.building_id, b.building_short_name, SUM(CASE WHEN ab.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS confirmed_cnt FROM Apartment_Buildings b JOIN Apartments a ON a.building_id = b.building_id LEFT JOIN Apartment_Bookings ab ON ab.apt_id = a.apt_id GROUP BY b.building_id) SELECT building_short_name, confirmed_cnt, DENSE_RANK() OVER (ORDER BY confirmed_cnt DESC) AS rnk FROM c ORDER BY rnk, building_short_name;",,"WITH building_confirmed AS (
+    SELECT 
+        b.building_id,
+        b.building_short_name,
+        COUNT(ab.apt_booking_id) AS confirmed_count
+    FROM Apartment_Buildings b
+    LEFT JOIN Apartments a ON b.building_id = a.building_id
+    LEFT JOIN Apartment_Bookings ab ON a.apt_id = ab.apt_id AND ab.booking_status_code = 'Confirmed'
+    GROUP BY b.building_id, b.building_short_name
+)
+SELECT 
+    building_id,
+    building_short_name,
+    confirmed_count,
+    RANK() OVER (ORDER BY confirmed_count DESC) AS rank
+FROM building_confirmed
+ORDER BY rank, building_id;","SELECT
+  b.building_full_name,
+  COUNT(ab.apt_booking_id) AS confirmed_booking_count,
+  DENSE_RANK() OVER (ORDER BY COUNT(ab.apt_booking_id) DESC) AS building_rank
+FROM Apartment_Bookings AS ab
+JOIN Apartments AS a
+  ON ab.apt_id = a.apt_id
+JOIN Apartment_Buildings AS b
+  ON a.building_id = b.building_id
+WHERE
+  ab.booking_status_code = 'Confirmed'
+GROUP BY
+  b.building_id,
+  b.building_full_name
+ORDER BY
+  building_rank;",
+466,apartment_rentals,L12,1/3,"WITH r AS (SELECT b.building_short_name, a.building_id, a.apt_id, a.apt_number, a.bedroom_count, ROW_NUMBER() OVER (PARTITION BY a.building_id ORDER BY a.bedroom_count DESC, a.apt_id ASC) AS rn FROM Apartments a JOIN Apartment_Buildings b ON b.building_id = a.building_id) SELECT building_short_name, apt_id, apt_number, bedroom_count FROM r WHERE rn = 1 ORDER BY building_short_name;",,"WITH RankedApartments AS (
+    SELECT
+        a.*,
+        ROW_NUMBER() OVER (PARTITION BY a.building_id ORDER BY a.bedroom_count DESC, a.apt_id ASC) AS rn
+    FROM Apartments a
+)
+SELECT 
+    ra.apt_id,
+    ra.building_id,
+    ra.apt_type_code,
+    ra.apt_number,
+    ra.bathroom_count,
+    ra.bedroom_count,
+    ra.room_count
+FROM RankedApartments ra
+WHERE ra.rn = 1
+ORDER BY ra.building_id;","WITH RankedApartments AS (
+  SELECT
+    apt_id,
+    building_id,
+    bedroom_count,
+    ROW_NUMBER() OVER (PARTITION BY building_id ORDER BY bedroom_count DESC, apt_id ASC) AS rn
+  FROM Apartments
+)
+SELECT
+  T2.building_id,
+  T2.building_full_name,
+  T1.apt_id,
+  T1.bedroom_count
+FROM RankedApartments AS T1
+JOIN Apartment_Buildings AS T2
+  ON T1.building_id = T2.building_id
+WHERE
+  T1.rn = 1
+ORDER BY
+  T2.building_id;",
+467,apartment_rentals,L12,1/3,"WITH t AS (SELECT g.guest_id, g.guest_first_name, g.guest_last_name, COALESCE(SUM(CAST(julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS REAL)), 0) AS total_confirmed_days FROM Guests g LEFT JOIN Apartment_Bookings ab ON ab.guest_id = g.guest_id AND ab.booking_status_code = 'Confirmed' GROUP BY g.guest_id) SELECT guest_id, guest_first_name, guest_last_name, total_confirmed_days, RANK() OVER (ORDER BY total_confirmed_days DESC) AS rnk FROM t ORDER BY rnk, guest_id;",,"WITH guest_confirmed_days AS (
+    SELECT 
+        g.guest_id,
+        COALESCE(SUM(
+            JULIANDAY(DATE(ab.booking_end_date)) - JULIANDAY(DATE(ab.booking_start_date))
+        ), 0) AS total_confirmed_days
+    FROM Guests g
+    LEFT JOIN Apartment_Bookings ab 
+        ON g.guest_id = ab.guest_id 
+        AND ab.booking_status_code = 'Confirmed'
+        AND ab.booking_start_date IS NOT NULL 
+        AND ab.booking_end_date IS NOT NULL
+    GROUP BY g.guest_id
+)
+SELECT 
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    gcd.total_confirmed_days,
+    DENSE_RANK() OVER (ORDER BY gcd.total_confirmed_days DESC) AS rank
+FROM guest_confirmed_days gcd
+JOIN Guests g ON gcd.guest_id = g.guest_id
+ORDER BY rank, g.guest_id;","WITH GuestTotalDays AS (
+  SELECT
+    T1.guest_id,
+    SUM(julianday(T1.booking_end_date) - julianday(T1.booking_start_date)) AS total_stay_days
+  FROM Apartment_Bookings AS T1
+  WHERE
+    T1.booking_status_code = 'Confirmed'
+  GROUP BY
+    T1.guest_id
+)
+SELECT
+  T2.guest_first_name,
+  T2.guest_last_name,
+  T1.total_stay_days,
+  DENSE_RANK() OVER (
+    ORDER BY
+      T1.total_stay_days DESC
+  ) AS ranking
+FROM GuestTotalDays AS T1
+JOIN Guests AS T2
+  ON T1.guest_id = T2.guest_id
+ORDER BY
+  ranking ASC;",
+470,apartment_rentals,L12,1/3,"WITH c AS (SELECT b.building_id, b.building_short_name, SUM(CASE WHEN ab.booking_status_code = 'Confirmed' THEN 1 ELSE 0 END) AS confirmed_cnt FROM Apartment_Buildings b JOIN Apartments a ON a.building_id = b.building_id LEFT JOIN Apartment_Bookings ab ON ab.apt_id = a.apt_id GROUP BY b.building_id) SELECT building_short_name, confirmed_cnt, CAST(confirmed_cnt AS REAL) / NULLIF(SUM(confirmed_cnt) OVER (), 0) AS share_of_confirmed FROM c ORDER BY share_of_confirmed DESC, building_short_name;",,"WITH total_confirmed AS (
+    SELECT COUNT(*) AS total
+    FROM Apartment_Bookings ab
+    WHERE ab.booking_status_code = 'Confirmed'
+),
+building_confirmed AS (
+    SELECT 
+        bld.building_id,
+        bld.building_short_name,
+        COUNT(ab.apt_booking_id) AS confirmed_count
+    FROM Apartment_Buildings bld
+    LEFT JOIN Apartments apt ON bld.building_id = apt.building_id
+    LEFT JOIN Apartment_Bookings ab ON apt.apt_id = ab.apt_id AND ab.booking_status_code = 'Confirmed'
+    GROUP BY bld.building_id, bld.building_short_name
+)
+SELECT 
+    bc.building_id,
+    bc.building_short_name,
+    CASE 
+        WHEN tc.total = 0 THEN 0 
+        ELSE (bc.confirmed_count * 100.0) / tc.total 
+    END AS percentage
+FROM building_confirmed bc
+CROSS JOIN total_confirmed tc;","SELECT
+  T3.building_full_name,
+  CAST(COUNT(T1.apt_booking_id) AS REAL) * 100 / (
+    SELECT
+      COUNT(*)
+    FROM Apartment_Bookings
+    WHERE
+      booking_status_code = 'Confirmed'
+  ) AS percentage_of_confirmed_bookings
+FROM Apartment_Bookings AS T1
+JOIN Apartments AS T2
+  ON T1.apt_id = T2.apt_id
+JOIN Apartment_Buildings AS T3
+  ON T2.building_id = T3.building_id
+WHERE
+  T1.booking_status_code = 'Confirmed'
+GROUP BY
+  T3.building_full_name
+ORDER BY
+  percentage_of_confirmed_bookings DESC;",
+473,apartment_rentals,L12,1/3,"SELECT guest_id, apt_booking_id, booking_start_date, COUNT(*) OVER (PARTITION BY guest_id ORDER BY booking_start_date ROWS UNBOUNDED PRECEDING) AS cumulative_bookings_for_guest FROM Apartment_Bookings ORDER BY guest_id, booking_start_date, apt_booking_id;",,"WITH guest_bookings AS (
+    SELECT 
+        b.apt_booking_id,
+        b.guest_id,
+        g.guest_first_name,
+        g.guest_last_name,
+        b.booking_start_date
+    FROM Apartment_Bookings b
+    JOIN Guests g ON b.guest_id = g.guest_id
+)
+SELECT 
+    apt_booking_id,
+    guest_id,
+    guest_first_name,
+    guest_last_name,
+    booking_start_date,
+    ROW_NUMBER() OVER (PARTITION BY guest_id ORDER BY booking_start_date, apt_booking_id) AS cumulative_bookings
+FROM guest_bookings
+ORDER BY guest_id, booking_start_date, apt_booking_id;","SELECT
+  T2.guest_first_name || ' ' || T2.guest_last_name AS ho_ten_khach,
+  T1.booking_start_date,
+  COUNT(T1.apt_booking_id) OVER (PARTITION BY T1.guest_id ORDER BY T1.booking_start_date) AS so_luot_dat_tich_luy
+FROM Apartment_Bookings AS T1
+JOIN Guests AS T2
+  ON T1.guest_id = T2.guest_id
+ORDER BY
+  ho_ten_khach,
+  T1.booking_start_date;",
+481,apartment_rentals,L15,1/3,"WITH apt_base AS (SELECT building_id, COUNT(*) AS apt_count FROM Apartments GROUP BY building_id), fac AS (SELECT a.building_id, COUNT(DISTINCT af.apt_id) AS apts_with_fac FROM Apartments a JOIN Apartment_Facilities af ON af.apt_id = a.apt_id GROUP BY a.building_id), cb AS (SELECT a.building_id, ab.apt_booking_id, ab.guest_id, CAST(julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS REAL) AS stay_days, date(ab.booking_start_date) AS start_d, date(ab.booking_end_date) AS end_d FROM Apartment_Bookings ab JOIN Apartments a ON a.apt_id = ab.apt_id JOIN Guests g ON g.guest_id = ab.guest_id WHERE ab.booking_status_code = 'Confirmed'), bounds AS (SELECT building_id, MIN(start_d) AS min_start, MAX(end_d) AS max_end FROM cb GROUP BY building_id), agg AS (SELECT building_id, SUM(stay_days) AS total_confirmed_days, COUNT(DISTINCT guest_id) AS distinct_guests, COUNT(DISTINCT apt_booking_id) AS confirmed_bookings FROM cb GROUP BY building_id), scored AS (SELECT b.building_short_name, ab.apt_count, COALESCE(f.apts_with_fac, 0) AS apts_with_fac, a.total_confirmed_days, a.distinct_guests, a.confirmed_bookings, CAST(julianday(bo.max_end) - julianday(bo.min_start) AS REAL) AS period_days, CAST(a.total_confirmed_days AS REAL) / NULLIF(CAST(ab.apt_count AS REAL) * NULLIF(CAST(julianday(bo.max_end) - julianday(bo.min_start) AS REAL), 0.0), 0.0) AS utilization_ratio, CAST(COALESCE(f.apts_with_fac, 0) AS REAL) / NULLIF(ab.apt_count, 0) AS facility_ratio, CAST(a.distinct_guests AS REAL) / NULLIF(a.confirmed_bookings, 0) AS guest_diversity_ratio, (CAST(a.total_confirmed_days AS REAL) / NULLIF(CAST(ab.apt_count AS REAL) * NULLIF(CAST(julianday(bo.max_end) - julianday(bo.min_start) AS REAL), 0.0), 0.0)) * (CAST(COALESCE(f.apts_with_fac, 0) AS REAL) / NULLIF(ab.apt_count, 0)) * (CAST(a.distinct_guests AS REAL) / NULLIF(a.confirmed_bookings, 0)) AS exploitation_score FROM Apartment_Buildings b JOIN apt_base ab ON ab.building_id = b.building_id LEFT JOIN fac f ON f.building_id = b.building_id JOIN agg a ON a.building_id = b.building_id JOIN bounds bo ON bo.building_id = b.building_id) SELECT building_short_name, apt_count, apts_with_fac, total_confirmed_days, distinct_guests, confirmed_bookings, period_days, utilization_ratio, facility_ratio, guest_diversity_ratio, exploitation_score, RANK() OVER (ORDER BY exploitation_score DESC) AS rnk FROM scored ORDER BY rnk, building_short_name;",,"WITH all_buildings AS (
+    SELECT building_id
+    FROM Apartment_Buildings
+),
+confirmed_days AS (
+    SELECT 
+        ABD.building_id,
+        SUM(JULIANDAY(AB.booking_end_date) - JULIANDAY(AB.booking_start_date) + 1) AS total_confirmed_days
+    FROM Apartment_Bookings AB
+    INNER JOIN Apartments A ON AB.apt_id = A.apt_id
+    INNER JOIN Apartment_Buildings ABD ON A.building_id = ABD.building_id
+    WHERE AB.booking_status_code = 'Confirmed'
+    GROUP BY ABD.building_id
+),
+available_days AS (
+    SELECT 
+        ABD.building_id,
+        COUNT(*) AS total_available_days
+    FROM View_Unit_Status VUS
+    INNER JOIN Apartments A ON VUS.apt_id = A.apt_id
+    INNER JOIN Apartment_Buildings ABD ON A.building_id = ABD.building_id
+    WHERE VUS.available_yn = 1
+    GROUP BY ABD.building_id
+),
+apartments_with_facility AS (
+    SELECT 
+        ABD.building_id,
+        COUNT(DISTINCT A.apt_id) AS apartments_with_facility
+    FROM Apartment_Facilities AF
+    INNER JOIN Apartments A ON AF.apt_id = A.apt_id
+    INNER JOIN Apartment_Buildings ABD ON A.building_id = ABD.building_id
+    GROUP BY ABD.building_id
+),
+total_apartments AS (
+    SELECT 
+        ABD.building_id,
+        COUNT(DISTINCT A.apt_id) AS total_apartments
+    FROM Apartments A
+    INNER JOIN Apartment_Buildings ABD ON A.building_id = ABD.building_id
+    GROUP BY ABD.building_id
+),
+guest_booking_counts AS (
+    SELECT 
+        ABD.building_id,
+        COUNT(DISTINCT AB.guest_id) AS distinct_guests,
+        COUNT(*) AS confirmed_bookings_count
+    FROM Apartment_Bookings AB
+    INNER JOIN Apartments A ON AB.apt_id = A.apt_id
+    INNER JOIN Apartment_Buildings ABD ON A.building_id = ABD.building_id
+    WHERE AB.booking_status_code = 'Confirmed'
+    GROUP BY ABD.building_id
+)
+SELECT 
+    all_buildings.building_id,
+    COALESCE(
+        (
+            COALESCE(confirmed_days.total_confirmed_days, 0) * 1.0 
+            / NULLIF(available_days.total_available_days, 0)
+        ) * 
+        (
+            COALESCE(apartments_with_facility.apartments_with_facility, 0) * 1.0 
+            / NULLIF(total_apartments.total_apartments, 0)
+        ) * 
+        (
+            COALESCE(guest_booking_counts.distinct_guests, 0) * 1.0 
+            / NULLIF(guest_booking_counts.confirmed_bookings_count, 0)
+        ),
+    0) AS exploitation_score
+FROM all_buildings
+LEFT JOIN confirmed_days ON all_buildings.building_id = confirmed_days.building_id
+LEFT JOIN available_days ON all_buildings.building_id = available_days.building_id
+LEFT JOIN apartments_with_facility ON all_buildings.building_id = apartments_with_facility.building_id
+LEFT JOIN total_apartments ON all_buildings.building_id = total_apartments.building_id
+LEFT JOIN guest_booking_counts ON all_buildings.building_id = guest_booking_counts.building_id
+ORDER BY exploitation_score DESC;","WITH BuildingMetrics AS (
+  SELECT
+    T1.building_full_name,
+    COALESCE(SUM(JULIANDAY(T3.booking_end_date) - JULIANDAY(T3.booking_start_date)), 0) AS total_confirmed_days,
+    COUNT(DISTINCT T4.apt_id) AS num_apts_with_facility,
+    COUNT(DISTINCT T2.apt_id) AS total_apts,
+    COUNT(DISTINCT T3.guest_id) AS num_distinct_guests,
+    COUNT(DISTINCT T3.apt_booking_id) AS num_confirmed_bookings
+  FROM Apartment_Buildings AS T1
+  LEFT JOIN Apartments AS T2
+    ON T1.building_id = T2.building_id
+  LEFT JOIN Apartment_Bookings AS T3
+    ON T2.apt_id = T3.apt_id AND T3.booking_status_code = 'Confirmed'
+  LEFT JOIN Apartment_Facilities AS T4
+    ON T2.apt_id = T4.apt_id
+  GROUP BY
+    T1.building_id,
+    T1.building_full_name
+)
+SELECT
+  T.building_full_name,
+  COALESCE(
+    T.total_confirmed_days * (
+      CAST(T.num_apts_with_facility AS REAL) / NULLIF(T.total_apts, 0)
+    ) * (
+      CAST(T.num_distinct_guests AS REAL) / NULLIF(T.num_confirmed_bookings, 0)
+    ),
+    0
+  ) AS occupancy_score
+FROM BuildingMetrics AS T
+ORDER BY
+  occupancy_score DESC;",
+482,apartment_rentals,L15,1/3,"WITH cb AS (SELECT g.guest_id, g.guest_first_name, g.guest_last_name, ap.building_id, ab.apt_booking_id, MIN(CAST(julianday(ab.booking_end_date) - julianday(ab.booking_start_date) AS REAL)) AS stay_days, MAX(CASE WHEN af.facility_code = 'Gym' THEN 1 ELSE 0 END) AS has_gym FROM Guests g JOIN Apartment_Bookings ab ON ab.guest_id = g.guest_id JOIN Apartments ap ON ap.apt_id = ab.apt_id JOIN Apartment_Buildings b ON b.building_id = ap.building_id LEFT JOIN Apartment_Facilities af ON af.apt_id = ap.apt_id WHERE ab.booking_status_code = 'Confirmed' GROUP BY g.guest_id, ap.building_id, ab.apt_booking_id), agg AS (SELECT guest_id, guest_first_name, guest_last_name, COUNT(DISTINCT building_id) AS distinct_buildings, SUM(stay_days) AS total_confirmed_days, MAX(has_gym) AS has_gym_any FROM cb GROUP BY guest_id), scored AS (SELECT *, CAST(distinct_buildings AS REAL) * CAST(total_confirmed_days AS REAL) * (1.0 + CAST(has_gym_any AS REAL)) AS loyalty_score FROM agg) SELECT guest_id, guest_first_name, guest_last_name, distinct_buildings, total_confirmed_days, has_gym_any, loyalty_score, DENSE_RANK() OVER (ORDER BY loyalty_score DESC) AS rnk FROM scored ORDER BY rnk, guest_id;",,"WITH confirmed_bookings AS (
+   SELECT 
+      b.guest_id,
+      a.building_id,
+      (JULIANDAY(b.booking_end_date) - JULIANDAY(b.booking_start_date)) AS days
+   FROM Apartment_Bookings b
+   JOIN Apartments a ON b.apt_id = a.apt_id
+   WHERE b.booking_status_code = 'Confirmed'
+),
+guest_stats AS (
+   SELECT 
+      guest_id,
+      COUNT(DISTINCT building_id) AS distinct_buildings,
+      SUM(days) AS total_days
+   FROM confirmed_bookings
+   GROUP BY guest_id
+),
+gym_guests AS (
+   SELECT DISTINCT b.guest_id
+   FROM Apartment_Bookings b
+   JOIN Apartment_Facilities f ON b.apt_id = f.apt_id
+   WHERE f.facility_code = 'Gym'
+)
+SELECT 
+   g.guest_id,
+   COALESCE(gs.distinct_buildings, 0) AS distinct_buildings,
+   COALESCE(gs.total_days, 0) AS total_days,
+   CASE WHEN gg.guest_id IS NOT NULL THEN 2 ELSE 1 END AS gym_factor,
+   (COALESCE(gs.distinct_buildings, 0) * COALESCE(gs.total_days, 0) * CASE WHEN gg.guest_id IS NOT NULL THEN 2 ELSE 1 END) AS score,
+   RANK() OVER (ORDER BY (COALESCE(gs.distinct_buildings, 0) * COALESCE(gs.total_days, 0) * CASE WHEN gg.guest_id IS NOT NULL THEN 2 ELSE 1 END) DESC) AS ranking
+FROM Guests g
+LEFT JOIN guest_stats gs ON g.guest_id = gs.guest_id
+LEFT JOIN gym_guests gg ON g.guest_id = gg.guest_id
+ORDER BY score DESC, g.guest_id;","WITH GuestStayDetails AS (
+  SELECT
+    g.guest_id,
+    g.guest_first_name,
+    g.guest_last_name,
+    a.building_id,
+    JULIANDAY(ab.booking_end_date) - JULIANDAY(ab.booking_start_date) AS stay_days,
+    af.facility_code AS gym_facility
+  FROM Guests AS g
+  JOIN Apartment_Bookings AS ab
+    ON g.guest_id = ab.guest_id
+  JOIN Apartments AS a
+    ON ab.apt_id = a.apt_id
+  LEFT JOIN Apartment_Facilities AS af
+    ON a.apt_id = af.apt_id AND af.facility_code = 'Gym'
+  WHERE
+    ab.booking_status_code = 'Confirmed'
+)
+SELECT
+  gsd.guest_first_name,
+  gsd.guest_last_name,
+  CAST(COUNT(DISTINCT gsd.building_id) AS REAL) * SUM(gsd.stay_days) * (
+    CASE WHEN COUNT(gsd.gym_facility) > 0 THEN 2 ELSE 1 END
+  ) AS loyalty_score,
+  RANK() OVER (ORDER BY CAST(COUNT(DISTINCT gsd.building_id) AS REAL) * SUM(gsd.stay_days) * (
+    CASE WHEN COUNT(gsd.gym_facility) > 0 THEN 2 ELSE 1 END
+  ) DESC) AS guest_rank
+FROM GuestStayDetails AS gsd
+GROUP BY
+  gsd.guest_id,
+  gsd.guest_first_name,
+  gsd.guest_last_name
+ORDER BY
+  guest_rank ASC;",
+499,allergy_1,L3,1/3,"SELECT StuID, UPPER(LName) AS last_name_upper, UPPER(Fname) AS first_name_upper, Age FROM Student ORDER BY StuID;",,"SELECT UPPER(S.LName || ' ' || S.Fname) AS full_name_uppercase, S.Age
+FROM Student S;","SELECT UPPER(LName), UPPER(Fname), Age FROM Student;",
+503,allergy_1,L3,1/3,"SELECT h.Allergy, COUNT(DISTINCT h.StuID) AS student_count FROM Has_Allergy h GROUP BY h.Allergy ORDER BY student_count DESC, h.Allergy;",,"SELECT at.Allergy, COUNT(DISTINCT ha.StuID) AS student_count
+FROM Allergy_Type at
+LEFT JOIN Has_Allergy ha ON at.Allergy = ha.Allergy
+GROUP BY at.Allergy
+ORDER BY at.Allergy;","SELECT
+  T2.AllergyType,
+  COUNT(DISTINCT T1.StuID)
+FROM Has_Allergy AS T1
+JOIN Allergy_Type AS T2
+  ON T1.Allergy = T2.Allergy
+GROUP BY
+  T2.AllergyType;",
+505,allergy_1,L5,1/3,"SELECT s.StuID, s.LName, s.Fname, a.Allergy AS allergy_name FROM Student s JOIN Has_Allergy h ON h.StuID = s.StuID JOIN Allergy_Type a ON a.Allergy = h.Allergy WHERE a.AllergyType = 'animal' ORDER BY s.StuID, a.Allergy;",,"SELECT s.StuID, s.Fname, s.LName, at.Allergy
+FROM Allergy_Type at
+JOIN Has_Allergy ha ON at.Allergy = ha.Allergy
+JOIN Student s ON ha.StuID = s.StuID
+WHERE at.AllergyType = 'animal'
+ORDER BY s.StuID;","SELECT
+  T1.Fname,
+  T1.LName,
+  T2.Allergy
+FROM Student AS T1
+JOIN Has_Allergy AS T2
+  ON T1.StuID = T2.StuID
+JOIN Allergy_Type AS T3
+  ON T2.Allergy = T3.Allergy
+WHERE
+  T3.AllergyType = 'animal';",
+506,allergy_1,L10,1/3,"SELECT s.StuID, s.LName, s.Fname, CASE WHEN EXISTS (SELECT 1 FROM Has_Allergy h JOIN Allergy_Type a ON a.Allergy = h.Allergy WHERE h.StuID = s.StuID AND a.AllergyType = 'environmental') THEN 1 ELSE 0 END AS has_environmental_allergy FROM Student s ORDER BY s.StuID;",,"SELECT 
+    s.StuID,
+    s.LName,
+    s.Fname,
+    CASE WHEN MAX(at.Allergy) IS NOT NULL THEN 'Yes' ELSE 'No' END AS HasEnvironmentalAllergy
+FROM Student s
+LEFT JOIN Has_Allergy ha ON s.StuID = ha.StuID
+LEFT JOIN Allergy_Type at ON ha.Allergy = at.Allergy AND at.AllergyType = 'environmental'
+GROUP BY s.StuID, s.LName, s.Fname;","SELECT
+  t1.Fname,
+  t1.LName,
+  CASE
+    WHEN COUNT(t3.AllergyType) > 0
+    THEN 'Có'
+    ELSE 'Không'
+  END AS CoDiUngMoiTruong
+FROM Student AS t1
+LEFT JOIN Has_Allergy AS t2
+  ON t1.StuID = t2.StuID
+LEFT JOIN Allergy_Type AS t3
+  ON t2.Allergy = t3.Allergy AND t3.AllergyType = 'environmental'
+GROUP BY
+  t1.StuID
+ORDER BY
+  t1.StuID;",
+509,allergy_1,L4,1/3,"SELECT s.StuID, s.LName, s.Fname, COUNT(DISTINCT h.Allergy) AS allergy_cnt FROM Student s JOIN Has_Allergy h ON h.StuID = s.StuID GROUP BY s.StuID HAVING COUNT(DISTINCT h.Allergy) >= 3 ORDER BY allergy_cnt DESC, s.StuID;",,"WITH StudentAllergyCount AS (
+    SELECT 
+        StuID, 
+        COUNT(DISTINCT Allergy) AS AllergyCount
+    FROM Has_Allergy
+    GROUP BY StuID
+    HAVING COUNT(DISTINCT Allergy) >= 3
+)
+SELECT 
+    s.*
+FROM Student s
+INNER JOIN StudentAllergyCount sac ON s.StuID = sac.StuID;","SELECT
+  T2.Fname,
+  T2.LName
+FROM Has_Allergy AS T1
+INNER JOIN Student AS T2
+  ON T1.StuID = T2.StuID
+GROUP BY
+  T1.StuID
+HAVING
+  COUNT(T1.Allergy) >= 3;",
+510,allergy_1,L6,1/3,"SELECT s.StuID, s.LName, s.Fname, COALESCE(GROUP_CONCAT(h.Allergy, ', '), 'không có') AS allergy_list FROM Student s LEFT JOIN Has_Allergy h ON h.StuID = s.StuID GROUP BY s.StuID ORDER BY s.StuID;",,"SELECT 
+   s.StuID,
+   (s.Fname || ' ' || s.LName) AS FullName,
+   COALESCE(GROUP_CONCAT(ha.Allergy), 'không có') AS Allergies
+FROM Student s
+LEFT JOIN Has_Allergy ha ON s.StuID = ha.StuID
+GROUP BY s.StuID, s.Fname, s.LName
+ORDER BY s.StuID;","SELECT
+  T1.Fname,
+  T1.LName,
+  IFNULL(GROUP_CONCAT(T2.Allergy, ', '), 'không có') AS Cac_Di_Ung
+FROM Student AS T1
+LEFT JOIN Has_Allergy AS T2
+  ON T1.StuID = T2.StuID
+GROUP BY
+  T1.StuID;",
+518,allergy_1,L12,1/3,"WITH c AS (SELECT s.StuID, s.Major, COUNT(DISTINCT h.Allergy) AS allergy_cnt FROM Student s LEFT JOIN Has_Allergy h ON h.StuID = s.StuID GROUP BY s.StuID), r AS (SELECT *, ROW_NUMBER() OVER (PARTITION BY Major ORDER BY allergy_cnt DESC, StuID ASC) AS rn FROM c) SELECT StuID, Major, allergy_cnt FROM r WHERE rn = 1 ORDER BY Major;",,"WITH student_allergy_count AS (
+    SELECT 
+        s.StuID,
+        s.Major,
+        s.LName,
+        s.Fname,
+        s.Age,
+        s.Sex,
+        s.Advisor,
+        s.city_code,
+        COUNT(ha.Allergy) AS allergy_count
+    FROM Student s
+    LEFT JOIN Has_Allergy ha ON s.StuID = ha.StuID
+    GROUP BY s.StuID, s.Major, s.LName, s.Fname, s.Age, s.Sex, s.Advisor, s.city_code
+),
+ranked_students AS (
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (PARTITION BY Major ORDER BY allergy_count DESC, StuID ASC) AS rn
+    FROM student_allergy_count
+)
+SELECT 
+    Major,
+    StuID,
+    LName,
+    Fname,
+    Age,
+    Sex,
+    Advisor,
+    city_code,
+    allergy_count
+FROM ranked_students
+WHERE rn = 1
+ORDER BY Major;","WITH StudentAllergyCount AS (
+  SELECT
+    T1.StuID,
+    T1.Fname,
+    T1.LName,
+    T1.Major,
+    COUNT(T2.Allergy) AS allergy_count
+  FROM Student AS T1
+  JOIN Has_Allergy AS T2
+    ON T1.StuID = T2.StuID
+  GROUP BY
+    T1.StuID,
+    T1.Fname,
+    T1.LName,
+    T1.Major
+), RankedStudents AS (
+  SELECT
+    sac.Major,
+    sac.StuID,
+    sac.Fname,
+    sac.LName,
+    sac.allergy_count,
+    ROW_NUMBER() OVER (PARTITION BY sac.Major ORDER BY sac.allergy_count DESC, sac.StuID ASC) AS rn
+  FROM StudentAllergyCount AS sac
+)
+SELECT
+  rs.Major,
+  rs.StuID,
+  rs.Fname,
+  rs.LName,
+  rs.allergy_count
+FROM RankedStudents AS rs
+WHERE
+  rs.rn = 1
+ORDER BY
+  rs.Major;",
+522,allergy_1,L13,1/3,"SELECT StuID, LName, Fname, Age, (Age - LAG(Age) OVER (ORDER BY StuID)) AS age_diff_from_prev FROM Student ORDER BY StuID;",,"SELECT
+    StuID,
+    LName,
+    Fname,
+    Age,
+    CASE WHEN LAG(Age) OVER (ORDER BY StuID) < Age 
+         THEN Age - LAG(Age) OVER (ORDER BY StuID)
+         ELSE NULL 
+    END AS Age_Diff
+FROM Student
+ORDER BY StuID;","SELECT
+  StuID,
+  Fname,
+  LName,
+  Age,
+  Age - LAG(Age, 1) OVER (ORDER BY StuID ASC) AS ChenhLechTuoiVoiNguoiTruoc
+FROM Student
+ORDER BY
+  StuID;",
+527,allergy_1,L6,1/3,"WITH per_cat AS (SELECT s.StuID, SUM(CASE WHEN a.AllergyType = 'food' THEN 1 ELSE 0 END) AS food_cnt, SUM(CASE WHEN a.AllergyType = 'environmental' THEN 1 ELSE 0 END) AS env_cnt FROM Student s LEFT JOIN Has_Allergy h ON h.StuID = s.StuID LEFT JOIN Allergy_Type a ON a.Allergy = h.Allergy GROUP BY s.StuID) SELECT s.StuID, s.LName, s.Fname, p.food_cnt, p.env_cnt FROM per_cat p JOIN Student s ON s.StuID = p.StuID WHERE p.food_cnt > p.env_cnt ORDER BY (p.food_cnt - p.env_cnt) DESC, s.StuID;",,"WITH AllergyCounts AS (
+    SELECT 
+        s.StuID,
+        COUNT(DISTINCT CASE WHEN at.AllergyType = 'food' THEN ha.Allergy END) AS food_count,
+        COUNT(DISTINCT CASE WHEN at.AllergyType = 'environmental' THEN ha.Allergy END) AS env_count
+    FROM Student s
+    LEFT JOIN Has_Allergy ha ON s.StuID = ha.StuID
+    LEFT JOIN Allergy_Type at ON ha.Allergy = at.Allergy
+    GROUP BY s.StuID
+)
+SELECT s.*
+FROM Student s
+INNER JOIN AllergyCounts ac ON s.StuID = ac.StuID
+WHERE ac.food_count > ac.env_count;","SELECT
+  T1.Fname,
+  T1.LName
+FROM Student AS T1
+JOIN Has_Allergy AS T2
+  ON T1.StuID = T2.StuID
+JOIN Allergy_Type AS T3
+  ON T2.Allergy = T3.Allergy
+GROUP BY
+  T1.StuID
+HAVING
+  SUM(CASE WHEN T3.AllergyType = 'food' THEN 1 ELSE 0 END) > SUM(CASE WHEN T3.AllergyType = 'environmental' THEN 1 ELSE 0 END);",
+529,allergy_1,L11,1/3,"SELECT s1.StuID AS student_1, s2.StuID AS student_2, s1.Age AS age, CASE WHEN s1.Sex = s2.Sex THEN 1 ELSE 0 END AS same_sex FROM Student s1 JOIN Student s2 ON s1.StuID < s2.StuID AND s1.Age = s2.Age ORDER BY age, student_1, student_2;",,"SELECT 
+    s1.StuID AS StuID1,
+    s2.StuID AS StuID2,
+    s1.Age,
+    CASE WHEN s1.Sex = s2.Sex THEN 'Yes' ELSE 'No' END AS same_sex
+FROM Student s1
+JOIN Student s2 ON s1.Age = s2.Age AND s1.StuID < s2.StuID
+ORDER BY s1.Age, s1.StuID, s2.StuID;","SELECT
+  T1.Fname AS Fname_SV1,
+  T1.LName AS LName_SV1,
+  T2.Fname AS Fname_SV2,
+  T2.LName AS LName_SV2,
+  T1.Age,
+  CASE
+    WHEN T1.Sex = T2.Sex
+    THEN 'Có'
+    ELSE 'Không'
+  END AS Cung_Gioi_Tinh
+FROM Student AS T1
+JOIN Student AS T2
+  ON T1.Age = T2.Age AND T1.StuID < T2.StuID
+ORDER BY
+  T1.Age,
+  T1.StuID;",
+534,allergy_1,L14,1/3,"WITH per_student AS (SELECT s.StuID, s.Major, COUNT(DISTINCT h.Allergy) AS allergy_cnt FROM Student s LEFT JOIN Has_Allergy h ON h.StuID = s.StuID GROUP BY s.StuID), bounds AS (SELECT Major, MIN(allergy_cnt) AS min_c, MAX(allergy_cnt) AS max_c FROM per_student GROUP BY Major), RECURSIVE series(Major, c) AS (SELECT Major, min_c FROM bounds UNION ALL SELECT Major, c + 1 FROM series WHERE c < (SELECT max_c FROM bounds b WHERE b.Major = series.Major)), dist AS (SELECT Major, allergy_cnt, COUNT(*) AS student_cnt FROM per_student GROUP BY Major, allergy_cnt) SELECT s.Major, s.c AS allergy_count, COALESCE(d.student_cnt, 0) AS student_count FROM series s LEFT JOIN dist d ON d.Major = s.Major AND d.allergy_cnt = s.c ORDER BY s.Major, s.c;",,"WITH RECURSIVE StudentAllergyCount AS (
+    SELECT s.StuID, s.Major, COUNT(h.Allergy) AS allergy_count
+    FROM Student s
+    LEFT JOIN Has_Allergy h ON s.StuID = h.StuID
+    GROUP BY s.StuID, s.Major
+),
+MajorMax AS (
+    SELECT Major, MAX(allergy_count) AS max_count
+    FROM StudentAllergyCount
+    GROUP BY Major
+),
+numbers(n) AS (
+    SELECT 0
+    UNION ALL
+    SELECT n + 1 FROM numbers 
+    WHERE n < (SELECT MAX(max_count) FROM MajorMax)
+)
+SELECT m.Major, n.n AS allergy_level, COUNT(sac.StuID) AS student_count
+FROM MajorMax m
+CROSS JOIN numbers n
+LEFT JOIN StudentAllergyCount sac ON m.Major = sac.Major AND n.n = sac.allergy_count
+WHERE n.n <= m.max_count
+GROUP BY m.Major, n.n
+ORDER BY m.Major, n.n;","WITH StudentAllergyCounts AS (
+  SELECT
+    T1.Major,
+    T1.StuID,
+    COUNT(T2.Allergy) AS num_allergies
+  FROM Student AS T1
+  LEFT JOIN Has_Allergy AS T2
+    ON T1.StuID = T2.StuID
+  GROUP BY
+    T1.StuID,
+    T1.Major
+)
+SELECT
+  Major,
+  num_allergies,
+  COUNT(StuID) AS student_count
+FROM StudentAllergyCounts
+GROUP BY
+  Major,
+  num_allergies
+ORDER BY
+  Major,
+  num_allergies;",
+537,allergy_1,L2,1/3,"SELECT StuID, LName, Fname, city_code FROM Student WHERE city_code IN ('HKG','PEK','NAR') ORDER BY city_code, StuID;",,"WITH Asian_Cities AS (
+    SELECT 'HKG' AS city_code UNION ALL
+    SELECT 'TPE' UNION ALL
+    SELECT 'SIN' UNION ALL
+    SELECT 'NRT' UNION ALL
+    SELECT 'BKK' UNION ALL
+    SELECT 'DEL' UNION ALL
+    SELECT 'PEK' UNION ALL
+    SELECT 'ICN' UNION ALL
+    SELECT 'KUL' UNION ALL
+    SELECT 'BOM' UNION ALL
+    SELECT 'CTU' UNION ALL
+    SELECT 'PVG' UNION ALL
+    SELECT 'SHA'
+)
+SELECT s.*
+FROM Student s
+WHERE s.city_code IN (SELECT city_code FROM Asian_Cities)
+ORDER BY s.StuID;","SELECT
+  StuID,
+  Fname,
+  LName,
+  city_code
+FROM Student
+WHERE
+  city_code = 'HKG';",
+538,allergy_1,L2,1/3,"SELECT StuID, LName, Fname, city_code FROM Student WHERE city_code IN ('BAL','CHI','DAL','DET','HOU','LOS','NYC','PHL','PIT','ROC','SFO','WAS','ATL','BOS','YYZ') ORDER BY city_code, StuID;",,"WITH NorthAmericaCity AS (
+    SELECT 'BAL' AS city_code
+    UNION ALL
+    SELECT 'WAS'
+)
+SELECT S.*
+FROM Student AS S
+WHERE S.city_code IN (SELECT city_code FROM NorthAmericaCity)
+ORDER BY S.StuID;","SELECT Fname, LName, city_code
+FROM Student
+WHERE city_code IN ('BAL', 'WAS');",
